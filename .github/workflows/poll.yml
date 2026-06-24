@@ -2,13 +2,15 @@ name: Fleet Tracker - Poll & Push
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Every 5 minutes (GitHub minimum)
+    - cron: '*/1 * * * *'  # Every minute (GitHub throttles to ~5min, script polls every 60s inside)
   workflow_dispatch:        # Manual trigger
+  push:
+    branches: [main]        # Re-register cron on push
 
 jobs:
   poll:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
 
     steps:
       - uses: actions/checkout@v4
@@ -28,5 +30,5 @@ jobs:
           echo "$AUTH_SECRETS" | base64 -d > Auth/secrets.json
           python -c "import json; json.load(open('Auth/secrets.json')); print('Auth secrets OK')"
 
-      - name: Poll & Push (every 60s for 280s)
-        run: python fleet_supabase_pusher.py --loop 280 --interval 60
+      - name: Poll every 60s for 300s
+        run: python fleet_supabase_pusher.py --loop 300 --interval 60
