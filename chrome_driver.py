@@ -58,7 +58,7 @@ def create_driver():
             pass
             
         chrome_options = get_options()
-        driver = uc.Chrome(options=chrome_options, version_main=None)
+        driver = uc.Chrome(options=chrome_options, version_main=149)
         print("[ChromeDriver] Installed and browser started.")
         return driver
     except Exception as e:
@@ -69,7 +69,7 @@ def create_driver():
             chrome_options = get_options()
             chrome_options.binary_location = chrome_path
             try:
-                driver = uc.Chrome(options=chrome_options, version_main=None)
+                driver = uc.Chrome(options=chrome_options, version_main=149)
                 print(f"[ChromeDriver] ChromeDriver started using {chrome_path}")
                 return driver
             except Exception as e:
@@ -82,7 +82,7 @@ def create_driver():
         try:
             chrome_options = get_options()
             chrome_options.add_argument("--headless")
-            driver = uc.Chrome(options=chrome_options, version_main=None)
+            driver = uc.Chrome(options=chrome_options, version_main=149)
             print("[ChromeDriver] Started in headless mode successfully.")
             return driver
         except Exception as e:
