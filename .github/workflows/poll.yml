@@ -21,15 +21,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       
-      - name: Poll & Push Location
+      - name: Restore auth secrets
         env:
-          # Cached auth secrets (from first run)
           AUTH_SECRETS: ${{ secrets.AUTH_SECRETS }}
         run: |
-          # Restore auth secrets if cached
           if [ -n "$AUTH_SECRETS" ]; then
-            echo "$AUTH_SECRETS" > Auth/secrets.json
+            echo "$AUTH_SECRETS" | base64 -d > Auth/secrets.json
+            echo "Auth secrets restored"
+          else
+            echo "ERROR: No AUTH_SECRETS secret found!"
+            exit 1
           fi
-          
-          # Run single poll
-          python fleet_supabase_pusher.py --once
+      
+      - name: Poll & Push Location
+        run: python fleet_supabase_pusher.py --once
