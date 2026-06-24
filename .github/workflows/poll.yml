@@ -9,6 +9,8 @@ jobs:
   poll:
     runs-on: ubuntu-latest
     timeout-minutes: 6
+    permissions:
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -28,5 +30,5 @@ jobs:
           echo "$AUTH_SECRETS" | base64 -d > Auth/secrets.json
           python -c "import json; json.load(open('Auth/secrets.json')); print('Auth secrets OK')"
 
-      - name: Poll every 60s for 300s
+      - name: Poll location every 60s for 300s
         run: python fleet_supabase_pusher.py --loop 300 --interval 60
