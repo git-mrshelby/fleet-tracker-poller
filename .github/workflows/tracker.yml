@@ -1,16 +1,14 @@
-name: Fleet Tracker - Poll & Push
+name: tracker
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '0 */5 * * *'
   workflow_dispatch:
 
 jobs:
   poll:
     runs-on: ubuntu-latest
     timeout-minutes: 6
-    permissions:
-      contents: read
 
     steps:
       - uses: actions/checkout@v4
