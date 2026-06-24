@@ -3,7 +3,10 @@ Fleet Tracker - LocaTag → Supabase Pusher
 Polls Google's FMD network, pushes location to Supabase via Edge Function.
 The app then reads from Supabase Realtime — no laptop dependency at runtime.
 
-Usage: python fleet_supabase_pusher.py [--interval 60]
+Usage:
+  python fleet_supabase_pusher.py --once          # Single poll
+  python fleet_supabase_pusher.py --loop 300      # Poll every 60s for 300s (GitHub Actions mode)
+  python fleet_supabase_pusher.py --interval 60   # Continuous (local dev)
 """
 
 import sys
@@ -140,38 +143,61 @@ def push_to_supabase(location):
         )
         if resp.status_code == 200:
             print(f"  [+] Pushed to Supabase")
+            return True
         else:
             print(f"  [-] Edge Function error: {resp.status_code} {resp.text[:200]}")
+            return False
     except Exception as e:
         print(f"  [-] Push error: {e}")
+        return False
+
+
+def poll_once():
+    """Poll location once and push to Supabase. Returns True if successful."""
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Locating...")
+    loc = locate_tracker()
+    if loc:
+        print(f"  [+] {loc['latitude']:.6f}, {loc['longitude']:.6f}")
+        return push_to_supabase(loc)
+    return False
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fleet Tracker - Supabase Pusher")
     parser.add_argument("--interval", type=int, default=60, help="Poll interval (default: 60s)")
     parser.add_argument("--once", action="store_true", help="Run once and exit")
+    parser.add_argument("--loop", type=int, default=0, help="Run in loop mode for N seconds (e.g. 280 for GitHub Actions)")
     args = parser.parse_args()
 
     print("=" * 50)
     print("Fleet Tracker to Supabase")
     print("=" * 50)
     print(f"Edge Function: {EDGE_FUNCTION_URL}")
-    print(f"Interval: {args.interval}s")
     print()
 
     if args.once:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Locating...")
-        loc = locate_tracker()
-        if loc:
-            print(f"  [+] {loc['latitude']:.6f}, {loc['longitude']:.6f}")
-            push_to_supabase(loc)
+        poll_once()
+    elif args.loop > 0:
+        # GitHub Actions mode: poll every 60s for up to N seconds
+        start = time.time()
+        poll_count = 0
+        success_count = 0
+        print(f"[*] Loop mode: polling every {args.interval}s for {args.loop}s")
+        while time.time() - start < args.loop:
+            poll_count += 1
+            if poll_once():
+                success_count += 1
+            remaining = int(args.loop - (time.time() - start))
+            if remaining > args.interval:
+                print(f"[*] Next poll in {args.interval}s... ({remaining}s remaining)")
+                time.sleep(args.interval)
+            else:
+                break
+        elapsed = int(time.time() - start)
+        print(f"\n[*] Done: {success_count}/{poll_count} polls successful in {elapsed}s")
     else:
         print("[*] Starting continuous push (Ctrl+C to stop)...")
         while True:
-            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Locating...")
-            loc = locate_tracker()
-            if loc:
-                print(f"  [+] {loc['latitude']:.6f}, {loc['longitude']:.6f}")
-                push_to_supabase(loc)
+            poll_once()
             print(f"[*] Next in {args.interval}s...")
             time.sleep(args.interval)
