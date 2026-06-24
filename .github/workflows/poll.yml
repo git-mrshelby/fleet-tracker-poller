@@ -2,10 +2,8 @@ name: Fleet Tracker - Poll & Push
 
 on:
   schedule:
-    - cron: '*/1 * * * *'  # Every minute (GitHub throttles to ~5min, script polls every 60s inside)
-  workflow_dispatch:        # Manual trigger
-  push:
-    branches: [main]        # Re-register cron on push
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 
 jobs:
   poll:
