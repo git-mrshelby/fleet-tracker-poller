@@ -25,14 +25,8 @@ jobs:
         env:
           AUTH_SECRETS: ${{ secrets.AUTH_SECRETS }}
         run: |
-          python -c "
-          import os, json
-          data = os.environ['AUTH_SECRETS']
-          with open('Auth/secrets.json', 'w') as f:
-              f.write(data)
-          json.load(open('Auth/secrets.json'))
-          print('Auth secrets restored and valid')
-          "
+          echo "$AUTH_SECRETS" | base64 -d > Auth/secrets.json
+          python -c "import json; json.load(open('Auth/secrets.json')); print('Auth secrets OK')"
       
       - name: Poll & Push Location
         run: python fleet_supabase_pusher.py --once
