@@ -26,6 +26,7 @@ from ProtoDecoders import DeviceUpdate_pb2, Common_pb2
 from ProtoDecoders.decoder import parse_device_update_protobuf
 from FMDNCrypto.foreign_tracker_cryptor import decrypt as fmdn_decrypt
 from KeyBackup.cloud_key_decryptor import decrypt_aes_gcm
+import traceback
 import requests
 
 LOCATAG_CANONIC_ID = "6a26bdae-0000-2c8c-8057-d43a2cf67e9f"
@@ -114,6 +115,7 @@ def locate_tracker():
 
     except Exception as e:
         print(f"  [-] Error: {e}")
+        traceback.print_exc()
         return None
 
 
