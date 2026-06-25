@@ -38,6 +38,10 @@ LOCATAG_NAME = "LocaTag"
 SUPABASE_URL = "https://sctpsakdkwyojcqxwvsj.supabase.co"
 EDGE_FUNCTION_URL = f"{SUPABASE_URL}/functions/v1/push-location"
 SUPABASE_ANON_KEY = "sb_publishable_26NwdXByyYdQ0JNh6sFiDQ_CZfnV1jS"
+SUPABASE_REST = f"{SUPABASE_URL}/rest/v1"
+
+VEHICLE_ID = "b0995a21-4f3a-46c5-b212-7de4a4d7513b"
+ORG_ID = "00000000-0000-0000-0000-000000000001"
 
 
 def locate_tracker():
@@ -152,13 +156,103 @@ def push_to_supabase(location):
         return False
 
 
+def haversine_m(lat1, lon1, lat2, lon2):
+    """Distance in meters between two lat/lon points."""
+    import math
+    R = 6371000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlam/2)**2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def check_geofences(lat, lon):
+    """Check geofence entry/exit and insert events if state changed."""
+    try:
+        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
+
+        # Fetch active geofences
+        r = requests.get(
+            f"{SUPABASE_REST}/geofences",
+            headers=headers,
+            params={"select": "id,name,center_lat,center_lon,radius_meters,notify_on_enter,notify_on_exit", "deleted_at": "is.null"},
+            timeout=5,
+        )
+        if r.status_code != 200:
+            return
+        geofences = r.json()
+        if not geofences:
+            return
+
+        for gf in geofences:
+            dist = haversine_m(lat, lon, gf["center_lat"], gf["center_lon"])
+            is_inside = dist <= gf["radius_meters"]
+
+            # Get last event for this vehicle+geofence
+            r2 = requests.get(
+                f"{SUPABASE_REST}/geofence_events",
+                headers=headers,
+                params={
+                    "select": "type",
+                    "vehicle_id": f"eq.{VEHICLE_ID}",
+                    "geofence_id": f"eq.{gf['id']}",
+                    "order": "occurred_at.desc",
+                    "limit": "1",
+                },
+                timeout=5,
+            )
+            last_type = None
+            if r2.status_code == 200 and r2.json():
+                last_type = r2.json()[0]["type"]
+
+            # Determine if state changed
+            event_type = None
+            if last_type is None and is_inside:
+                event_type = "enter"
+            elif last_type == "exit" and is_inside:
+                event_type = "enter"
+            elif last_type == "enter" and not is_inside:
+                event_type = "exit"
+
+            if event_type is None:
+                continue
+
+            # Check notify preference
+            if event_type == "enter" and not gf.get("notify_on_enter", True):
+                continue
+            if event_type == "exit" and not gf.get("notify_on_exit", True):
+                continue
+
+            # Insert event
+            requests.post(
+                f"{SUPABASE_REST}/geofence_events",
+                headers={**headers, "Content-Type": "application/json"},
+                json={
+                    "org_id": ORG_ID,
+                    "vehicle_id": VEHICLE_ID,
+                    "geofence_id": gf["id"],
+                    "type": event_type,
+                    "occurred_at": datetime.now(timezone.utc).isoformat(),
+                },
+                timeout=5,
+            )
+            print(f"  [!] Geofence '{gf['name']}': {event_type.upper()} (distance: {dist:.0f}m)")
+
+    except Exception as e:
+        print(f"  [-] Geofence check error: {e}")
+
+
 def poll_once():
     """Poll location once and push to Supabase. Returns True if successful."""
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Locating...")
     loc = locate_tracker()
     if loc:
         print(f"  [+] {loc['latitude']:.6f}, {loc['longitude']:.6f}")
-        return push_to_supabase(loc)
+        ok = push_to_supabase(loc)
+        if ok:
+            check_geofences(loc["latitude"], loc["longitude"])
+        return ok
     return False
 
 
