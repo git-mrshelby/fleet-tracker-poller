@@ -167,12 +167,57 @@ def haversine_m(lat1, lon1, lat2, lon2):
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+def insert_vehicle_event(event_type, lat=None, lon=None, event_data=None):
+    """Insert an event into vehicle_events table."""
+    try:
+        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
+        payload = {
+            "org_id": ORG_ID,
+            "vehicle_id": VEHICLE_ID,
+            "event_type": event_type,
+            "lat": lat,
+            "lon": lon,
+            "event_data": event_data or {},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        requests.post(
+            f"{SUPABASE_REST}/vehicle_events",
+            headers={**headers, "Content-Type": "application/json"},
+            json=payload,
+            timeout=5,
+        )
+        print(f"  [!] Event: {event_type}")
+    except Exception as e:
+        print(f"  [-] Event insert error: {e}")
+
+
+def get_last_event():
+    """Get the last event type for this vehicle."""
+    try:
+        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
+        r = requests.get(
+            f"{SUPABASE_REST}/vehicle_events",
+            headers=headers,
+            params={
+                "select": "event_type,created_at",
+                "vehicle_id": f"eq.{VEHICLE_ID}",
+                "order": "created_at.desc",
+                "limit": "1",
+            },
+            timeout=5,
+        )
+        if r.status_code == 200 and r.json():
+            return r.json()[0]["event_type"]
+    except:
+        pass
+    return None
+
+
 def check_geofences(lat, lon):
-    """Check geofence entry/exit and insert events if state changed."""
+    """Check geofence entry/exit and insert events."""
     try:
         headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
 
-        # Fetch active geofences
         r = requests.get(
             f"{SUPABASE_REST}/geofences",
             headers=headers,
@@ -180,16 +225,16 @@ def check_geofences(lat, lon):
             timeout=5,
         )
         if r.status_code != 200:
-            return
+            return False
         geofences = r.json()
         if not geofences:
-            return
+            return False
 
+        inside_any = False
         for gf in geofences:
             dist = haversine_m(lat, lon, gf["center_lat"], gf["center_lon"])
             is_inside = dist <= gf["radius_meters"]
 
-            # Get last event for this vehicle+geofence
             r2 = requests.get(
                 f"{SUPABASE_REST}/geofence_events",
                 headers=headers,
@@ -206,7 +251,6 @@ def check_geofences(lat, lon):
             if r2.status_code == 200 and r2.json():
                 last_type = r2.json()[0]["type"]
 
-            # Determine if state changed
             event_type = None
             if last_type is None and is_inside:
                 event_type = "enter"
@@ -215,16 +259,17 @@ def check_geofences(lat, lon):
             elif last_type == "enter" and not is_inside:
                 event_type = "exit"
 
+            if is_inside:
+                inside_any = True
+
             if event_type is None:
                 continue
 
-            # Check notify preference
             if event_type == "enter" and not gf.get("notify_on_enter", True):
                 continue
             if event_type == "exit" and not gf.get("notify_on_exit", True):
                 continue
 
-            # Insert event
             requests.post(
                 f"{SUPABASE_REST}/geofence_events",
                 headers={**headers, "Content-Type": "application/json"},
@@ -237,10 +282,69 @@ def check_geofences(lat, lon):
                 },
                 timeout=5,
             )
-            print(f"  [!] Geofence '{gf['name']}': {event_type.upper()} (distance: {dist:.0f}m)")
+
+            if event_type == "enter":
+                insert_vehicle_event("geofence_enter", lat, lon, {"zone": gf["name"], "distance_m": round(dist)})
+                print(f"  [!] Geofence '{gf['name']}': ENTER (distance: {dist:.0f}m)")
+            else:
+                insert_vehicle_event("geofence_exit", lat, lon, {"zone": gf["name"], "distance_m": round(dist)})
+                print(f"  [!] Geofence '{gf['name']}': EXIT (distance: {dist:.0f}m)")
+
+        return inside_any
 
     except Exception as e:
         print(f"  [-] Geofence check error: {e}")
+        return False
+
+
+def check_movement_status(lat, lon, inside_any):
+    """Determine moving/idle/parked status based on location history."""
+    try:
+        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
+
+        r = requests.get(
+            f"{SUPABASE_REST}/location_logs",
+            headers=headers,
+            params={
+                "select": "lat,lon,captured_at",
+                "vehicle_id": f"eq.{VEHICLE_ID}",
+                "order": "captured_at.desc",
+                "limit": "5",
+            },
+            timeout=5,
+        )
+        if r.status_code != 200 or len(r.json()) < 2:
+            return
+
+        points = r.json()
+        last_dist = haversine_m(
+            points[0]["lat"], points[0]["lon"],
+            points[1]["lat"], points[1]["lon"],
+        )
+        t1 = datetime.fromisoformat(points[0]["captured_at"].replace("Z", "+00:00"))
+        t2 = datetime.fromisoformat(points[1]["captured_at"].replace("Z", "+00:00"))
+        time_diff_min = (t1 - t2).total_seconds() / 60
+
+        last_event = get_last_event()
+
+        if last_dist >= 50:
+            if last_event != "moving":
+                insert_vehicle_event("moving", lat, lon, {"distance_m": round(last_dist), "time_diff_min": round(time_diff_min, 1)})
+        elif last_dist < 50:
+            stationary_min = time_diff_min
+            if len(points) >= 3:
+                t3 = datetime.fromisoformat(points[2]["captured_at"].replace("Z", "+00:00"))
+                stationary_min = (t1 - t3).total_seconds() / 60
+
+            if stationary_min >= 15:
+                if last_event != "parked":
+                    insert_vehicle_event("parked", lat, lon, {"stationary_min": round(stationary_min, 1)})
+            elif stationary_min >= 5:
+                if last_event != "idle":
+                    insert_vehicle_event("idle", lat, lon, {"stationary_min": round(stationary_min, 1)})
+
+    except Exception as e:
+        print(f"  [-] Movement check error: {e}")
 
 
 def poll_once():
@@ -251,9 +355,15 @@ def poll_once():
         print(f"  [+] {loc['latitude']:.6f}, {loc['longitude']:.6f}")
         ok = push_to_supabase(loc)
         if ok:
-            check_geofences(loc["latitude"], loc["longitude"])
+            inside_any = check_geofences(loc["latitude"], loc["longitude"])
+            check_movement_status(loc["latitude"], loc["longitude"], inside_any)
         return ok
-    return False
+    else:
+        print("  [-] Tracker not found")
+        last_event = get_last_event()
+        if last_event != "offline":
+            insert_vehicle_event("offline", None, None, {"reason": "tracker_not_found"})
+        return False
 
 
 if __name__ == "__main__":
