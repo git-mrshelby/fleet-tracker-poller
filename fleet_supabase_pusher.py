@@ -258,7 +258,7 @@ def poll_once():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fleet Tracker - Supabase Pusher")
-    parser.add_argument("--interval", type=int, default=60, help="Poll interval (default: 60s)")
+    parser.add_argument("--interval", type=int, default=1, help="Poll interval (default: 1s)")
     parser.add_argument("--once", action="store_true", help="Run once and exit")
     parser.add_argument("--loop", type=int, default=0, help="Run in loop mode for N seconds (e.g. 280 for GitHub Actions)")
     args = parser.parse_args()
