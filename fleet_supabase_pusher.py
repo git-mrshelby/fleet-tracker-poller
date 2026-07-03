@@ -62,14 +62,27 @@ def locate_tracker():
         hex_payload = action_request.SerializeToString().hex()
         nova_request(NOVA_ACTION_API_SCOPE, hex_payload)
 
-        timeout = 15
+        timeout = 25
+        grace = 10  # wait extra seconds after first response for crowd-sourced reports
         start = time.time()
-        while result[0] is None and time.time() - start < timeout:
+        got_first = False
+        first_at = None
+
+        while time.time() - start < timeout:
+            if result[0] is not None and not got_first:
+                got_first = True
+                first_at = time.time()
+                print("  [+] Got first response (cached), waiting for crowd-sourced...")
+            if got_first and time.time() - first_at >= grace:
+                break
             time.sleep(0.3)
 
         if result[0] is None:
             print("  [-] Timeout")
             return None
+
+        if got_first:
+            print(f"  [+] Collected responses for {time.time() - first_at:.1f}s after first")
 
         device_update = result[0]
         device_registration = device_update.deviceMetadata.information.deviceRegistration
