@@ -62,10 +62,10 @@ def locate_tracker():
         hex_payload = action_request.SerializeToString().hex()
         nova_request(NOVA_ACTION_API_SCOPE, hex_payload)
 
-        timeout = 90
+        timeout = 15
         start = time.time()
         while result[0] is None and time.time() - start < timeout:
-            time.sleep(0.5)
+            time.sleep(0.3)
 
         if result[0] is None:
             print("  [-] Timeout")

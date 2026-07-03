@@ -32,8 +32,8 @@ jobs:
           echo "$AUTH_SECRETS" | base64 -d > Auth/secrets.json
           python -c "import json; json.load(open('Auth/secrets.json')); print('Auth secrets OK')"
 
-      - name: Poll every 1s for 60s
-        run: python fleet_supabase_pusher.py --loop 60 --interval 1
+      - name: Poll every 1s for 280s
+        run: python fleet_supabase_pusher.py --loop 280 --interval 1
 
       - name: Self-trigger next run immediately
         env:
