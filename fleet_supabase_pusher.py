@@ -137,7 +137,7 @@ def push_to_supabase(location):
             },
             json={
                 "tracker_id": LOCATAG_CANONIC_ID,
-                "name": LOCATAG_NAME,
+                "name": None,
                 "latitude": location["latitude"],
                 "longitude": location["longitude"],
                 "captured_at": location["captured_at"],
