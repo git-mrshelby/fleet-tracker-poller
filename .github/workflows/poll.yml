@@ -1,7 +1,13 @@
 name: Poll Tracker
 
 on:
+  schedule:
+    - cron: '*/5 * * * *'
   workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
 
 jobs:
   poll:
