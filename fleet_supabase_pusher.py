@@ -23,6 +23,7 @@ from NovaApi.ExecuteAction.LocateTracker.location_request import (
     create_action_request, generate_random_uuid, NOVA_ACTION_API_SCOPE,
 )
 from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import retrieve_identity_key
+from NovaApi.ExecuteAction.PlaySound.sound_request import create_sound_request
 from NovaApi.nova_request import nova_request
 from Auth.fcm_receiver import FcmReceiver
 from ProtoDecoders import DeviceUpdate_pb2, Common_pb2
@@ -45,7 +46,10 @@ ORG_ID = "00000000-0000-0000-0000-000000000001"
 
 
 def locate_tracker():
-    """Locate the LocaTag via Google's FMD network."""
+    """Locate the LocaTag via Google's FMD network.
+    Strategy: startSound forces nearby phones to scan for tracker BLE,
+    then locateTracker collects the fresh crowd-sourced reports.
+    """
     try:
         request_uuid = generate_random_uuid()
         result = [None]
@@ -56,6 +60,20 @@ def locate_tracker():
                 result[0] = device_update
 
         fcm_token = FcmReceiver().register_for_location_updates(handle_response)
+
+        # Step 1: Send startSound to force nearby phones to actively scan for tracker BLE
+        print("  [~] Triggering sound to force BLE scan...")
+        try:
+            hex_sound = create_sound_request(True, LOCATAG_CANONIC_ID, fcm_token)
+            nova_request(NOVA_ACTION_API_SCOPE, hex_sound)
+        except Exception as e:
+            print(f"  [-] Sound trigger failed: {e}")
+
+        # Step 2: Wait for nearby phones to detect tracker BLE during sound relay
+        time.sleep(10)
+
+        # Step 3: Now request location with fresh crowd-sourced data
+        print("  [~] Requesting location (after BLE scan)...")
         action_request = create_action_request(LOCATAG_CANONIC_ID, fcm_token, request_uuid)
         action_request.action.locateTracker.lastHighTrafficEnablingTime.seconds = int(time.time())
         action_request.action.locateTracker.contributorType = 4  # FMDN_CONTRIBUTOR_ALL_LOCATIONS
@@ -63,8 +81,9 @@ def locate_tracker():
         hex_payload = action_request.SerializeToString().hex()
         nova_request(NOVA_ACTION_API_SCOPE, hex_payload)
 
+        # Step 4: Wait for location response
         timeout = 25
-        grace = 10  # wait extra seconds after first response for crowd-sourced reports
+        grace = 10
         start = time.time()
         got_first = False
         first_at = None
@@ -73,10 +92,18 @@ def locate_tracker():
             if result[0] is not None and not got_first:
                 got_first = True
                 first_at = time.time()
-                print("  [+] Got first response (cached), waiting for crowd-sourced...")
+                print("  [+] Got first response, waiting for crowd-sourced...")
             if got_first and time.time() - first_at >= grace:
                 break
             time.sleep(0.3)
+
+        # Step 5: Stop the sound
+        try:
+            hex_stop = create_sound_request(False, LOCATAG_CANONIC_ID, fcm_token)
+            nova_request(NOVA_ACTION_API_SCOPE, hex_stop)
+            print("  [~] Sound stopped")
+        except Exception as e:
+            print(f"  [-] Sound stop failed: {e}")
 
         if result[0] is None:
             print("  [-] Timeout")
