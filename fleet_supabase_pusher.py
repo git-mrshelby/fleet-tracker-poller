@@ -57,7 +57,8 @@ def locate_tracker():
 
         fcm_token = FcmReceiver().register_for_location_updates(handle_response)
         action_request = create_action_request(LOCATAG_CANONIC_ID, fcm_token, request_uuid)
-        action_request.action.locateTracker.contributorType = 2
+        action_request.action.locateTracker.lastHighTrafficEnablingTime.seconds = int(time.time())
+        action_request.action.locateTracker.contributorType = 4  # FMDN_CONTRIBUTOR_ALL_LOCATIONS
 
         hex_payload = action_request.SerializeToString().hex()
         nova_request(NOVA_ACTION_API_SCOPE, hex_payload)
