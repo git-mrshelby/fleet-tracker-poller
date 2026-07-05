@@ -1,0 +1,34 @@
+name: Locate Now (Single Shot)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  locate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore auth secrets
+        env:
+          AUTH_SECRETS: ${{ secrets.AUTH_SECRETS }}
+        run: |
+          echo "$AUTH_SECRETS" | base64 -d > Auth/secrets.json
+          python -c "import json; json.load(open('Auth/secrets.json')); print('Auth secrets OK')"
+
+      - name: Single locate pulse
+        run: python fleet_supabase_pusher.py --loop 1 --interval 0.5
