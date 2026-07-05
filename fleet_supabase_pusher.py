@@ -47,8 +47,8 @@ ORG_ID = "00000000-0000-0000-0000-000000000001"
 
 def locate_tracker():
     """Locate the LocaTag via Google's FMD network.
-    Strategy: startSound forces nearby phones to scan for tracker BLE,
-    then locateTracker collects the fresh crowd-sourced reports.
+    Fast mode: skip sound trigger (LocaTag has no speaker),
+    just send locateTracker and grab the first FCM response.
     """
     try:
         request_uuid = generate_random_uuid()
@@ -61,19 +61,8 @@ def locate_tracker():
 
         fcm_token = FcmReceiver().register_for_location_updates(handle_response)
 
-        # Step 1: Send startSound to force nearby phones to actively scan for tracker BLE
-        print("  [~] Triggering sound to force BLE scan...")
-        try:
-            hex_sound = create_sound_request(True, LOCATAG_CANONIC_ID, fcm_token)
-            nova_request(NOVA_ACTION_API_SCOPE, hex_sound)
-        except Exception as e:
-            print(f"  [-] Sound trigger failed: {e}")
-
-        # Step 2: Wait for nearby phones to detect tracker BLE during sound relay
-        time.sleep(10)
-
-        # Step 3: Now request location with fresh crowd-sourced data
-        print("  [~] Requesting location (after BLE scan)...")
+        # Send locateTracker directly (skip sound - LocaTag has no speaker)
+        print("  [~] Sending locateTracker (fast mode, no sound)...")
         action_request = create_action_request(LOCATAG_CANONIC_ID, fcm_token, request_uuid)
         action_request.action.locateTracker.lastHighTrafficEnablingTime.seconds = int(time.time())
         action_request.action.locateTracker.contributorType = 4  # FMDN_CONTRIBUTOR_ALL_LOCATIONS
@@ -81,36 +70,19 @@ def locate_tracker():
         hex_payload = action_request.SerializeToString().hex()
         nova_request(NOVA_ACTION_API_SCOPE, hex_payload)
 
-        # Step 4: Wait for location response
-        timeout = 25
-        grace = 10
+        # Wait for FCM response - first one is usually fresh enough
+        timeout = 20
         start = time.time()
-        got_first = False
-        first_at = None
 
         while time.time() - start < timeout:
-            if result[0] is not None and not got_first:
-                got_first = True
-                first_at = time.time()
-                print("  [+] Got first response, waiting for crowd-sourced...")
-            if got_first and time.time() - first_at >= grace:
+            if result[0] is not None:
+                print(f"  [+] Got response in {time.time() - start:.1f}s")
                 break
             time.sleep(0.3)
-
-        # Step 5: Stop the sound
-        try:
-            hex_stop = create_sound_request(False, LOCATAG_CANONIC_ID, fcm_token)
-            nova_request(NOVA_ACTION_API_SCOPE, hex_stop)
-            print("  [~] Sound stopped")
-        except Exception as e:
-            print(f"  [-] Sound stop failed: {e}")
 
         if result[0] is None:
             print("  [-] Timeout")
             return None
-
-        if got_first:
-            print(f"  [+] Collected responses for {time.time() - first_at:.1f}s after first")
 
         device_update = result[0]
         device_registration = device_update.deviceMetadata.information.deviceRegistration
