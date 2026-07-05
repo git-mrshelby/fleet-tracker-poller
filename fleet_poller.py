@@ -52,6 +52,7 @@ def locate_and_push(supabase_token=None):
         fcm_token = FcmReceiver().register_for_location_updates(handle_location_response)
 
         action_request = create_action_request(LOCATAG_CANONIC_ID, fcm_token, request_uuid)
+        action_request.action.locateTracker.lastHighTrafficEnablingTime.seconds = int(time.time()) - (5 * 3600)
         action_request.action.locateTracker.contributorType = 2  # FMDN_ALL_LOCATIONS
 
         from ProtoDecoders import Common_pb2
