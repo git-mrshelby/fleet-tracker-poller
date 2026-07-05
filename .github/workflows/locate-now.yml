@@ -10,7 +10,7 @@ permissions:
 jobs:
   locate:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 3
 
     steps:
       - uses: actions/checkout@v4
@@ -31,4 +31,4 @@ jobs:
           python -c "import json; json.load(open('Auth/secrets.json')); print('Auth secrets OK')"
 
       - name: Single locate pulse
-        run: python fleet_supabase_pusher.py --loop 1 --interval 0.5
+        run: python fleet_supabase_pusher.py --once
