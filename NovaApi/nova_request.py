@@ -21,7 +21,9 @@ def nova_request(api_scope, hex_payload):
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         "Authorization": "Bearer " + android_device_manager_oauth_token,
         "Accept-Language": "en-US",
-        "User-Agent": "fmd/20006320; gzip"
+        "User-Agent": "findmy-android/2.0",
+        "X-Android-Package": "com.google.android.apps.adm",
+        "X-Android-Cert": "38918a453d07199354f8b19af05ec6562ced5788"
     }
 
     payload = binascii.unhexlify(hex_payload)
