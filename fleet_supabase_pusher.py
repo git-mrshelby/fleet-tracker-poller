@@ -64,8 +64,8 @@ def locate_tracker():
         # Send locateTracker directly (skip sound - LocaTag has no speaker)
         print("  [~] Sending locateTracker (fast mode, no sound)...")
         action_request = create_action_request(LOCATAG_CANONIC_ID, fcm_token, request_uuid)
-        action_request.action.locateTracker.lastHighTrafficEnablingTime.seconds = int(time.time())
-        action_request.action.locateTracker.contributorType = 4  # FMDN_CONTRIBUTOR_ALL_LOCATIONS
+        action_request.action.locateTracker.lastHighTrafficEnablingTime.seconds = int(time.time()) - (5 * 3600)
+        action_request.action.locateTracker.contributorType = 2  # FMDN_ALL_LOCATIONS (matches BSkando HA integration)
 
         hex_payload = action_request.SerializeToString().hex()
         nova_request(NOVA_ACTION_API_SCOPE, hex_payload)
