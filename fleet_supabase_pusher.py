@@ -228,11 +228,32 @@ def get_last_movement_event():
     return None, None
 
 
+def get_last_event_by_type(event_type):
+    """Get the last event timestamp for a specific event type."""
+    try:
+        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
+        r = requests.get(
+            f"{SUPABASE_REST}/vehicle_events",
+            headers=headers,
+            params={
+                "select": "created_at",
+                "vehicle_id": f"eq.{VEHICLE_ID}",
+                "event_type": f"eq.{event_type}",
+                "order": "created_at.desc",
+                "limit": "1",
+            },
+            timeout=5,
+        )
+        if r.status_code == 200 and r.json():
+            return r.json()[0]["created_at"]
+    except:
+        pass
+    return None
+
+
 def can_insert_event(event_type):
     """Check if we should insert this event (5 min cooldown per type)."""
-    last_type, last_ts = get_last_movement_event()
-    if last_type != event_type:
-        return True
+    last_ts = get_last_event_by_type(event_type)
     if last_ts is None:
         return True
     try:
