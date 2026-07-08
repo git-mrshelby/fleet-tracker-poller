@@ -339,7 +339,7 @@ def check_movement_status(lat, lon, inside_any):
         headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
 
         r = requests.get(
-            f"{SUPABASE_REST}/location_logs",
+            f"{SUPABASE_REST}/location_logs_view",
             headers=headers,
             params={
                 "select": "lat,lon,captured_at",
