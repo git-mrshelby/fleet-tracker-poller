@@ -205,14 +205,14 @@ def insert_vehicle_event(event_type, lat=None, lon=None, event_data=None):
 
 
 def get_last_movement_event():
-    """Get the last movement event type (moving/idle/parked/offline) for this vehicle."""
+    """Get the last movement event type and timestamp for this vehicle."""
     try:
         headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
         r = requests.get(
             f"{SUPABASE_REST}/vehicle_events",
             headers=headers,
             params={
-                "select": "event_type",
+                "select": "event_type,created_at",
                 "vehicle_id": f"eq.{VEHICLE_ID}",
                 "event_type": "in.(moving,idle,parked,offline)",
                 "order": "created_at.desc",
@@ -221,10 +221,27 @@ def get_last_movement_event():
             timeout=5,
         )
         if r.status_code == 200 and r.json():
-            return r.json()[0]["event_type"]
+            row = r.json()[0]
+            return row["event_type"], row["created_at"]
     except:
         pass
-    return None
+    return None, None
+
+
+def can_insert_event(event_type):
+    """Check if we should insert this event (5 min cooldown per type)."""
+    last_type, last_ts = get_last_movement_event()
+    if last_type != event_type:
+        return True
+    if last_ts is None:
+        return True
+    try:
+        last_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+        if (datetime.now(timezone.utc) - last_dt).total_seconds() < 300:
+            return False
+    except:
+        pass
+    return True
 
 
 def get_last_geofence_state(geofence_id):
@@ -361,10 +378,10 @@ def check_movement_status(lat, lon, inside_any):
         t2 = datetime.fromisoformat(points[1]["captured_at"].replace("Z", "+00:00"))
         time_diff_min = (t1 - t2).total_seconds() / 60
 
-        last_event = get_last_movement_event()
+        last_event = get_last_movement_event()[0]
 
         if last_dist >= 50:
-            if last_event != "moving":
+            if can_insert_event("moving"):
                 insert_vehicle_event("moving", lat, lon, {"distance_m": round(last_dist), "time_diff_min": round(time_diff_min, 1)})
         elif last_dist < 50:
             stationary_min = time_diff_min
@@ -373,10 +390,10 @@ def check_movement_status(lat, lon, inside_any):
                 stationary_min = (t1 - t3).total_seconds() / 60
 
             if stationary_min >= 15:
-                if last_event != "parked":
+                if can_insert_event("parked"):
                     insert_vehicle_event("parked", lat, lon, {"stationary_min": round(stationary_min, 1)})
             elif stationary_min >= 5:
-                if last_event != "idle":
+                if can_insert_event("idle"):
                     insert_vehicle_event("idle", lat, lon, {"stationary_min": round(stationary_min, 1)})
 
     except Exception as e:
@@ -396,8 +413,7 @@ def poll_once():
         return ok
     else:
         print("  [-] Tracker not found")
-        last_event = get_last_movement_event()
-        if last_event != "offline":
+        if can_insert_event("offline"):
             insert_vehicle_event("offline", None, None, {"reason": "tracker_not_found"})
         return False
 
