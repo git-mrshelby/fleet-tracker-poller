@@ -35,8 +35,8 @@ jobs:
       - name: Poll every 1s for 240s
         run: python fleet_supabase_pusher.py --loop 240 --interval 1
 
-      - name: Self-trigger next run immediately
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run poll.yml --ref main
+      # - name: Self-trigger next run immediately
+      #   if: always()
+      #   env:
+      #     GH_TOKEN: ${{ github.token }}
+      #   run: gh workflow run poll.yml --ref main
