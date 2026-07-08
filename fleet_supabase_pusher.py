@@ -244,6 +244,28 @@ def can_insert_event(event_type):
     return True
 
 
+def get_last_location_time():
+    """Get the timestamp of the last successful location push."""
+    try:
+        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
+        r = requests.get(
+            f"{SUPABASE_REST}/location_logs_view",
+            headers=headers,
+            params={
+                "select": "captured_at",
+                "vehicle_id": f"eq.{VEHICLE_ID}",
+                "order": "captured_at.desc",
+                "limit": "1",
+            },
+            timeout=5,
+        )
+        if r.status_code == 200 and r.json():
+            return datetime.fromisoformat(r.json()[0]["captured_at"].replace("Z", "+00:00"))
+    except:
+        pass
+    return None
+
+
 def get_last_geofence_state(geofence_id):
     """Get last geofence event type for a specific vehicle+geofence."""
     try:
@@ -413,8 +435,18 @@ def poll_once():
         return ok
     else:
         print("  [-] Tracker not found")
-        if can_insert_event("offline"):
-            insert_vehicle_event("offline", None, None, {"reason": "tracker_not_found"})
+        last_loc = get_last_location_time()
+        if last_loc:
+            hours_since = (datetime.now(timezone.utc) - last_loc).total_seconds() / 3600
+            if hours_since >= 2:
+                if can_insert_event("offline"):
+                    insert_vehicle_event("offline", None, None, {"reason": "no_signal_2h", "last_seen_hours": round(hours_since, 1)})
+                    print(f"  [!] Offline: last seen {hours_since:.1f}h ago")
+            else:
+                print(f"  [-] Skip offline: last seen {hours_since:.1f}h ago (< 2h)")
+        else:
+            if can_insert_event("offline"):
+                insert_vehicle_event("offline", None, None, {"reason": "tracker_not_found"})
         return False
 
 
