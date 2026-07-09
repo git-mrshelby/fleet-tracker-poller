@@ -421,8 +421,6 @@ def check_movement_status(lat, lon, inside_any):
         t2 = datetime.fromisoformat(points[1]["captured_at"].replace("Z", "+00:00"))
         time_diff_min = (t1 - t2).total_seconds() / 60
 
-        last_event = get_last_movement_event()[0]
-
         if last_dist >= 50:
             if can_insert_event("moving"):
                 insert_vehicle_event("moving", lat, lon, {"distance_m": round(last_dist), "time_diff_min": round(time_diff_min, 1)})
@@ -432,7 +430,7 @@ def check_movement_status(lat, lon, inside_any):
                 t3 = datetime.fromisoformat(points[2]["captured_at"].replace("Z", "+00:00"))
                 stationary_min = (t1 - t3).total_seconds() / 60
 
-            if stationary_min >= 15:
+            if stationary_min >= 20:
                 if can_insert_event("parked"):
                     insert_vehicle_event("parked", lat, lon, {"stationary_min": round(stationary_min, 1)})
             elif stationary_min >= 5:
