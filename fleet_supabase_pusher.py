@@ -456,13 +456,24 @@ def poll_once():
         print("  [-] Tracker not found")
         last_loc = get_last_location_time()
         if last_loc:
-            hours_since = (datetime.now(timezone.utc) - last_loc).total_seconds() / 3600
+            minutes_since = (datetime.now(timezone.utc) - last_loc).total_seconds() / 60
+            hours_since = minutes_since / 60
             if hours_since >= 2:
                 if can_insert_event("offline"):
                     insert_vehicle_event("offline", None, None, {"reason": "no_signal_2h", "last_seen_hours": round(hours_since, 1)})
-                    print(f"  [!] Offline: last seen {hours_since:.1f}h ago")
+                    print(f"  [!] Offline: last seen {minutes_since:.0f}min ago")
+            elif minutes_since >= 20:
+                last_event = get_last_movement_event()[0]
+                if last_event != "parked" and can_insert_event("parked"):
+                    insert_vehicle_event("parked", None, None, {"reason": "no_signal_stationary", "last_seen_min": round(minutes_since)})
+                    print(f"  [!] Parked (no signal): last seen {minutes_since:.0f}min ago")
+            elif minutes_since >= 5:
+                last_event = get_last_movement_event()[0]
+                if last_event != "idle" and can_insert_event("idle"):
+                    insert_vehicle_event("idle", None, None, {"reason": "no_signal_stationary", "last_seen_min": round(minutes_since)})
+                    print(f"  [!] Idle (no signal): last seen {minutes_since:.0f}min ago")
             else:
-                print(f"  [-] Skip offline: last seen {hours_since:.1f}h ago (< 2h)")
+                print(f"  [-] Skip status change: last seen {minutes_since:.0f}min ago (< 5min)")
         else:
             if can_insert_event("offline"):
                 insert_vehicle_event("offline", None, None, {"reason": "tracker_not_found"})
