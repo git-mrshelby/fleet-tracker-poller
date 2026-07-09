@@ -421,8 +421,10 @@ def check_movement_status(lat, lon, inside_any):
         t2 = datetime.fromisoformat(points[1]["captured_at"].replace("Z", "+00:00"))
         time_diff_min = (t1 - t2).total_seconds() / 60
 
+        last_event = get_last_movement_event()[0]
+
         if last_dist >= 50:
-            if can_insert_event("moving"):
+            if last_event != "moving":
                 insert_vehicle_event("moving", lat, lon, {"distance_m": round(last_dist), "time_diff_min": round(time_diff_min, 1)})
         elif last_dist < 50:
             stationary_min = time_diff_min
@@ -431,10 +433,10 @@ def check_movement_status(lat, lon, inside_any):
                 stationary_min = (t1 - t3).total_seconds() / 60
 
             if stationary_min >= 20:
-                if can_insert_event("parked"):
+                if last_event != "parked":
                     insert_vehicle_event("parked", lat, lon, {"stationary_min": round(stationary_min, 1)})
             elif stationary_min >= 5:
-                if can_insert_event("idle"):
+                if last_event != "idle":
                     insert_vehicle_event("idle", lat, lon, {"stationary_min": round(stationary_min, 1)})
 
     except Exception as e:
@@ -458,22 +460,21 @@ def poll_once():
         if last_loc:
             minutes_since = (datetime.now(timezone.utc) - last_loc).total_seconds() / 60
             hours_since = minutes_since / 60
+            last_event = get_last_movement_event()[0]
             if hours_since >= 2:
-                if can_insert_event("offline"):
+                if last_event != "offline":
                     insert_vehicle_event("offline", None, None, {"reason": "no_signal_2h", "last_seen_hours": round(hours_since, 1)})
                     print(f"  [!] Offline: last seen {minutes_since:.0f}min ago")
             elif minutes_since >= 20:
-                last_event = get_last_movement_event()[0]
-                if last_event != "parked" and can_insert_event("parked"):
+                if last_event != "parked":
                     insert_vehicle_event("parked", None, None, {"reason": "no_signal_stationary", "last_seen_min": round(minutes_since)})
                     print(f"  [!] Parked (no signal): last seen {minutes_since:.0f}min ago")
             elif minutes_since >= 5:
-                last_event = get_last_movement_event()[0]
-                if last_event != "idle" and can_insert_event("idle"):
+                if last_event != "idle":
                     insert_vehicle_event("idle", None, None, {"reason": "no_signal_stationary", "last_seen_min": round(minutes_since)})
                     print(f"  [!] Idle (no signal): last seen {minutes_since:.0f}min ago")
             else:
-                print(f"  [-] Skip status change: last seen {minutes_since:.0f}min ago (< 5min)")
+                print(f"  [-] Skip: last seen {minutes_since:.0f}min ago (< 5min)")
         else:
             if can_insert_event("offline"):
                 insert_vehicle_event("offline", None, None, {"reason": "tracker_not_found"})
