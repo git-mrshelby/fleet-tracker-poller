@@ -423,6 +423,11 @@ def check_movement_status(lat, lon, inside_any):
 
         last_event = get_last_movement_event()[0]
 
+        if time_diff_min >= 120:
+            if last_event != "offline":
+                insert_vehicle_event("offline", lat, lon, {"reason": "gap_2h", "gap_min": round(time_diff_min)})
+                last_event = "offline"
+
         if last_dist >= 50:
             if last_event != "moving":
                 insert_vehicle_event("moving", lat, lon, {"distance_m": round(last_dist), "time_diff_min": round(time_diff_min, 1)})
@@ -433,11 +438,11 @@ def check_movement_status(lat, lon, inside_any):
                 stationary_min = (t1 - t3).total_seconds() / 60
 
             if stationary_min >= 20:
-                if last_event != "parked":
-                    insert_vehicle_event("parked", lat, lon, {"stationary_min": round(stationary_min, 1)})
-            elif stationary_min >= 5:
                 if last_event != "idle":
                     insert_vehicle_event("idle", lat, lon, {"stationary_min": round(stationary_min, 1)})
+            elif stationary_min >= 5:
+                if last_event != "parked":
+                    insert_vehicle_event("parked", lat, lon, {"stationary_min": round(stationary_min, 1)})
 
     except Exception as e:
         print(f"  [-] Movement check error: {e}")
