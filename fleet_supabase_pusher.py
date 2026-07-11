@@ -429,7 +429,7 @@ def check_movement_status(lat, lon, inside_any):
                 t3 = datetime.fromisoformat(points[2]["captured_at"].replace("Z", "+00:00"))
                 stationary_min = (t1 - t3).total_seconds() / 60
 
-            # Status only downgrades: moving → idle → parked → offline
+            # Status only downgrades: navigating → idle → parked → offline
             if stationary_min >= 120:
                 if last_event not in ("offline",):
                     insert_vehicle_event("offline", lat, lon, {"reason": "stationary_2h", "stationary_min": round(stationary_min)})
@@ -439,8 +439,10 @@ def check_movement_status(lat, lon, inside_any):
             elif stationary_min >= 5:
                 if last_event not in ("idle", "parked", "offline"):
                     insert_vehicle_event("idle", lat, lon, {"stationary_min": round(stationary_min, 1)})
-        elif last_dist >= 50:
-            if last_event != "moving":
+        elif last_dist >= 100:
+            if last_event == "moving":
+                pass
+            else:
                 insert_vehicle_event("moving", lat, lon, {"distance_m": round(last_dist), "time_diff_min": round(time_diff_min, 1)})
 
     except Exception as e:
