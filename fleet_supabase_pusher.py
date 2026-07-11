@@ -394,56 +394,52 @@ def check_geofences(lat, lon):
 
 
 def check_movement_status(lat, lon, inside_any):
-    """Determine moving/idle/parked status based on location history."""
+    """Determine navigating/idle/parked/offline based on time since last position."""
     try:
-        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
-
-        r = requests.get(
-            f"{SUPABASE_REST}/location_logs_view",
-            headers=headers,
-            params={
-                "select": "lat,lon,captured_at",
-                "vehicle_id": f"eq.{VEHICLE_ID}",
-                "order": "captured_at.desc",
-                "limit": "5",
-            },
-            timeout=5,
-        )
-        if r.status_code != 200 or len(r.json()) < 2:
+        last_event = get_last_movement_event()[0]
+        last_loc = get_last_location_time()
+        if not last_loc:
             return
 
-        points = r.json()
-        last_dist = haversine_m(
-            points[0]["lat"], points[0]["lon"],
-            points[1]["lat"], points[1]["lon"],
-        )
-        t1 = datetime.fromisoformat(points[0]["captured_at"].replace("Z", "+00:00"))
-        t2 = datetime.fromisoformat(points[1]["captured_at"].replace("Z", "+00:00"))
-        time_diff_min = (t1 - t2).total_seconds() / 60
+        minutes_since = (datetime.now(timezone.utc) - last_loc).total_seconds() / 60
+        hours_since = minutes_since / 60
 
-        last_event = get_last_movement_event()[0]
-
-        if last_dist < 50:
-            stationary_min = time_diff_min
-            if len(points) >= 3:
-                t3 = datetime.fromisoformat(points[2]["captured_at"].replace("Z", "+00:00"))
-                stationary_min = (t1 - t3).total_seconds() / 60
-
-            # Status only downgrades: navigating → idle → parked → offline
-            if stationary_min >= 120:
-                if last_event not in ("offline",):
-                    insert_vehicle_event("offline", lat, lon, {"reason": "stationary_2h", "stationary_min": round(stationary_min)})
-            elif stationary_min >= 20:
-                if last_event not in ("parked", "offline"):
-                    insert_vehicle_event("parked", lat, lon, {"stationary_min": round(stationary_min, 1)})
-            elif stationary_min >= 5:
-                if last_event not in ("idle", "parked", "offline"):
-                    insert_vehicle_event("idle", lat, lon, {"stationary_min": round(stationary_min, 1)})
-        elif last_dist >= 100:
-            if last_event == "moving":
-                pass
-            else:
-                insert_vehicle_event("moving", lat, lon, {"distance_m": round(last_dist), "time_diff_min": round(time_diff_min, 1)})
+        # Status only downgrades: navigating → idle → parked → offline
+        if hours_since >= 2:
+            if last_event != "offline":
+                insert_vehicle_event("offline", lat, lon, {"reason": "no_signal_2h", "last_seen_hours": round(hours_since, 1)})
+                print(f"  [!] Offline: last seen {minutes_since:.0f}min ago")
+        elif minutes_since >= 20:
+            if last_event not in ("parked", "offline"):
+                insert_vehicle_event("parked", lat, lon, {"reason": "no_signal_stationary", "last_seen_min": round(minutes_since)})
+                print(f"  [!] Parked (no signal): last seen {minutes_since:.0f}min ago")
+        elif minutes_since >= 5:
+            if last_event not in ("idle", "parked", "offline"):
+                insert_vehicle_event("idle", lat, lon, {"reason": "no_signal_stationary", "last_seen_min": round(minutes_since)})
+                print(f"  [!] Idle (no signal): last seen {minutes_since:.0f}min ago")
+        else:
+            # Last seen <5 min ago — check if actually moved
+            headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
+            r = requests.get(
+                f"{SUPABASE_REST}/location_logs_view",
+                headers=headers,
+                params={
+                    "select": "lat,lon,captured_at",
+                    "vehicle_id": f"eq.{VEHICLE_ID}",
+                    "order": "captured_at.desc",
+                    "limit": "5",
+                },
+                timeout=5,
+            )
+            if r.status_code == 200 and len(r.json()) >= 2:
+                points = r.json()
+                dist_old = haversine_m(
+                    points[0]["lat"], points[0]["lon"],
+                    points[-1]["lat"], points[-1]["lon"],
+                )
+                if dist_old >= 100 and last_event not in ("moving", "idle", "parked", "offline"):
+                    insert_vehicle_event("moving", lat, lon, {"distance_m": round(dist_old)})
+                    print(f"  [!] Navigating: moved {dist_old:.0f}m (last seen <5min)")
 
     except Exception as e:
         print(f"  [-] Movement check error: {e}")
