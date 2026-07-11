@@ -396,6 +396,7 @@ def check_geofences(lat, lon):
 def check_movement_status(lat, lon, inside_any):
     """Determine navigating/idle/parked/offline based on time since last position."""
     try:
+        last_event, _ = get_last_movement_event()
         last_loc = get_last_location_time()
         if not last_loc:
             return
@@ -403,15 +404,13 @@ def check_movement_status(lat, lon, inside_any):
         minutes_since = (datetime.now(timezone.utc) - last_loc).total_seconds() / 60
         hours_since = minutes_since / 60
 
+        new_status = None
         if hours_since >= 2:
-            insert_vehicle_event("offline", lat, lon, {"reason": "no_signal_2h", "last_seen_hours": round(hours_since, 1)})
-            print(f"  [!] Offline: last seen {minutes_since:.0f}min ago")
+            new_status = "offline"
         elif minutes_since >= 20:
-            insert_vehicle_event("parked", lat, lon, {"reason": "no_signal_stationary", "last_seen_min": round(minutes_since)})
-            print(f"  [!] Parked (no signal): last seen {minutes_since:.0f}min ago")
+            new_status = "parked"
         elif minutes_since >= 5:
-            insert_vehicle_event("idle", lat, lon, {"reason": "no_signal_stationary", "last_seen_min": round(minutes_since)})
-            print(f"  [!] Idle (no signal): last seen {minutes_since:.0f}min ago")
+            new_status = "idle"
         else:
             # Last seen <5 min ago — check if actually moved (≥100m = genuine movement, not GPS drift)
             headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
@@ -433,8 +432,11 @@ def check_movement_status(lat, lon, inside_any):
                     points[-1]["lat"], points[-1]["lon"],
                 )
                 if dist_old >= 100:
-                    insert_vehicle_event("moving", lat, lon, {"distance_m": round(dist_old)})
-                    print(f"  [!] Navigating: moved {dist_old:.0f}m (last seen <5min)")
+                    new_status = "moving"
+
+        if new_status and new_status != last_event:
+            insert_vehicle_event(new_status, lat, lon, {} if new_status == "moving" else {"last_seen_min": round(minutes_since)})
+            print(f"  [!] {new_status.title()}: last seen {minutes_since:.0f}min ago")
 
     except Exception as e:
         print(f"  [-] Movement check error: {e}")
@@ -457,16 +459,18 @@ def poll_once():
         if last_loc:
             minutes_since = (datetime.now(timezone.utc) - last_loc).total_seconds() / 60
             hours_since = minutes_since / 60
+            last_event, _ = get_last_movement_event()
+            new_status = None
             if hours_since >= 2:
-                insert_vehicle_event("offline", None, None, {"reason": "no_signal_2h", "last_seen_hours": round(hours_since, 1)})
-                print(f"  [!] Offline: last seen {minutes_since:.0f}min ago")
+                new_status = "offline"
             elif minutes_since >= 20:
-                insert_vehicle_event("parked", None, None, {"reason": "no_signal_stationary", "last_seen_min": round(minutes_since)})
-                print(f"  [!] Parked (no signal): last seen {minutes_since:.0f}min ago")
+                new_status = "parked"
             elif minutes_since >= 5:
-                insert_vehicle_event("idle", None, None, {"reason": "no_signal_stationary", "last_seen_min": round(minutes_since)})
-                print(f"  [!] Idle (no signal): last seen {minutes_since:.0f}min ago")
-            else:
+                new_status = "idle"
+            if new_status and new_status != last_event:
+                insert_vehicle_event(new_status, None, None, {"last_seen_min": round(minutes_since)})
+                print(f"  [!] {new_status.title()}: last seen {minutes_since:.0f}min ago")
+            elif new_status is None:
                 print(f"  [-] Skip: last seen {minutes_since:.0f}min ago (< 5min)")
         else:
             if can_insert_event("offline"):
