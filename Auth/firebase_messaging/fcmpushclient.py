@@ -449,36 +449,44 @@ class FcmPushClient:  # pylint:disable=too-many-instance-attributes
         ):
             # The deleted_messages message does not contain data.
             return
-        crypto_key = self._app_data_by_key(msg, "crypto-key")[3:]  # strip dh=
-        salt = self._app_data_by_key(msg, "encryption")[5:]  # strip salt=
-        subtype = self._app_data_by_key(msg, "subtype")
-        if TYPE_CHECKING:
-            assert self.credentials
-        if subtype != self.credentials["gcm"]["app_id"]:
-            self._log_warn_with_limit(
-                "Subtype %s in data message does not match"
-                + "app id client was registered with %s",
-                subtype,
-                self.credentials["gcm"]["app_id"],
-            )
-        if not self.credentials:
-            return
-        decrypted = self._decrypt_raw_data(
-            self.credentials, crypto_key, salt, msg.raw_data
-        )
-        with contextlib_suppress(json.JSONDecodeError, ValueError):
-            decrypted_json = json.loads(decrypted.decode("utf-8"))
-
-        ret_val = decrypted_json if decrypted_json else decrypted
-        self._log_verbose(
-            "Decrypted data for message %s is: %s", msg.persistent_id, ret_val
-        )
         try:
-            self.callback(ret_val, msg.persistent_id, self.callback_context)
-            self._reset_error_count(ErrorType.NOTIFY)
+            crypto_key = self._app_data_by_key(msg, "crypto-key")[3:]  # strip dh=
+            salt = self._app_data_by_key(msg, "encryption")[5:]  # strip salt=
+            subtype = self._app_data_by_key(msg, "subtype")
+            if TYPE_CHECKING:
+                assert self.credentials
+            if subtype != self.credentials["gcm"]["app_id"]:
+                self._log_warn_with_limit(
+                    "Subtype %s in data message does not match"
+                    + "app id client was registered with %s",
+                    subtype,
+                    self.credentials["gcm"]["app_id"],
+                )
+            if not self.credentials:
+                return
+            decrypted = self._decrypt_raw_data(
+                self.credentials, crypto_key, salt, msg.raw_data
+            )
+            with contextlib_suppress(json.JSONDecodeError, ValueError):
+                decrypted_json = json.loads(decrypted.decode("utf-8"))
+
+            ret_val = decrypted_json if decrypted_json else decrypted
+            self._log_verbose(
+                "Decrypted data for message %s is: %s", msg.persistent_id, ret_val
+            )
+            try:
+                self.callback(ret_val, msg.persistent_id, self.callback_context)
+                self._reset_error_count(ErrorType.NOTIFY)
+            except Exception:
+                _logger.exception("Unexpected exception calling notification callback\n")
+                self._try_increment_error_count(ErrorType.NOTIFY)
         except Exception:
-            _logger.exception("Unexpected exception calling notification callback\n")
-            self._try_increment_error_count(ErrorType.NOTIFY)
+            _logger.warning(
+                "Skipping undecryptable/unprocessable data message %s",
+                msg.persistent_id,
+                exc_info=True,
+            )
+            return
 
     def _new_input_stream_id_available(self) -> bool:
         return self.last_input_stream_id_reported != self.input_stream_id
