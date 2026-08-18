@@ -44,9 +44,63 @@ SUPABASE_REST = f"{SUPABASE_URL}/rest/v1"
 VEHICLE_ID = "REDACTED"
 ORG_ID = "00000000-0000-0000-0000-000000000001"
 
+# Discovered trackers: list of (device_name, canonic_id).
+# Populated once per process run via the FMD device-list API (same technique
+# used to read tracker 1). Tracker 1's canonic_id is always included as a
+# fallback so behaviour is identical to before if discovery fails.
+DISCOVERED_TRACKERS: list = []
 
-def locate_tracker():
-    """Locate the LocaTag via Google's FMD network.
+
+def discover_trackers():
+    """List all trackers on the linked Google FMD account.
+
+    Returns a list of (device_name, canonic_id) tuples using the same
+    Google Find My Device device-list API that reads tracker 1.
+    """
+    try:
+        from NovaApi.ListDevices.nbe_list_devices import request_device_list
+        from ProtoDecoders.decoder import parse_device_list_protobuf, get_canonic_ids
+        result_hex = request_device_list()
+        device_list = parse_device_list_protobuf(result_hex)
+        canonic_ids = get_canonic_ids(device_list)
+        if canonic_ids:
+            print(f"  [+] Discovered {len(canonic_ids)} tracker(s) on account:")
+            for name, cid in canonic_ids:
+                print(f"      - {name}: {cid}")
+            return canonic_ids
+    except Exception as e:
+        print(f"  [-] Device discovery failed: {e}")
+    # Fallback: at minimum keep tracker 1 working exactly as before.
+    return [(LOCATAG_NAME, LOCATAG_CANONIC_ID)]
+
+
+def get_trackers():
+    """Return cached discovered trackers, discovering once if needed."""
+    global DISCOVERED_TRACKERS
+    if not DISCOVERED_TRACKERS:
+        DISCOVERED_TRACKERS = discover_trackers()
+    return DISCOVERED_TRACKERS
+
+
+def resolve_vehicle_id(canonic_id):
+    """Look up the Supabase vehicle id for a tracker (by tracker_id)."""
+    try:
+        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
+        r = requests.get(
+            f"{SUPABASE_REST}/vehicles",
+            headers=headers,
+            params={"select": "id", "tracker_id": f"eq.{canonic_id}", "org_id": f"eq.{ORG_ID}"},
+            timeout=5,
+        )
+        if r.status_code == 200 and r.json():
+            return r.json()[0]["id"]
+    except Exception:
+        pass
+    return None
+
+
+def locate_tracker(canonic_id):
+    """Locate a LocaTag (by canonic_id) via Google's FMD network.
     Fast mode: skip sound trigger (LocaTag has no speaker),
     just send locateTracker and grab the first FCM response.
     """
@@ -63,7 +117,7 @@ def locate_tracker():
 
         # Send locateTracker directly (skip sound - LocaTag has no speaker)
         print("  [~] Sending locateTracker (fast mode, no sound)...")
-        action_request = create_action_request(LOCATAG_CANONIC_ID, fcm_token, request_uuid)
+        action_request = create_action_request(canonic_id, fcm_token, request_uuid)
         action_request.action.locateTracker.lastHighTrafficEnablingTime.seconds = int(time.time()) - (5 * 3600)
         action_request.action.locateTracker.contributorType = 2  # FMDN_ALL_LOCATIONS (matches BSkando HA integration)
 
@@ -139,8 +193,8 @@ def locate_tracker():
         return None
 
 
-def push_to_supabase(location):
-    """Push location to Supabase via Edge Function."""
+def push_to_supabase(location, canonic_id):
+    """Push location to Supabase via Edge Function. Returns the vehicle_id."""
     try:
         resp = requests.post(
             EDGE_FUNCTION_URL,
@@ -149,7 +203,7 @@ def push_to_supabase(location):
                 "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
             },
             json={
-                "tracker_id": LOCATAG_CANONIC_ID,
+                "tracker_id": canonic_id,
                 "name": None,
                 "latitude": location["latitude"],
                 "longitude": location["longitude"],
@@ -160,13 +214,16 @@ def push_to_supabase(location):
         )
         if resp.status_code == 200:
             print(f"  [+] Pushed to Supabase")
-            return True
+            try:
+                return resp.json().get("vehicle_id")
+            except Exception:
+                return None
         else:
             print(f"  [-] Edge Function error: {resp.status_code} {resp.text[:200]}")
-            return False
+            return None
     except Exception as e:
         print(f"  [-] Push error: {e}")
-        return False
+        return None
 
 
 def haversine_m(lat1, lon1, lat2, lon2):
@@ -180,13 +237,13 @@ def haversine_m(lat1, lon1, lat2, lon2):
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
-def insert_vehicle_event(event_type, lat=None, lon=None, event_data=None):
+def insert_vehicle_event(event_type, vehicle_id, lat=None, lon=None, event_data=None):
     """Insert an event into vehicle_events table."""
     try:
         headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
         payload = {
             "org_id": ORG_ID,
-            "vehicle_id": VEHICLE_ID,
+            "vehicle_id": vehicle_id,
             "event_type": event_type,
             "lat": lat,
             "lon": lon,
@@ -204,7 +261,7 @@ def insert_vehicle_event(event_type, lat=None, lon=None, event_data=None):
         print(f"  [-] Event insert error: {e}")
 
 
-def get_last_movement_event():
+def get_last_movement_event(vehicle_id):
     """Get the last movement event type and timestamp for this vehicle."""
     try:
         headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
@@ -213,7 +270,7 @@ def get_last_movement_event():
             headers=headers,
             params={
                 "select": "event_type,created_at",
-                "vehicle_id": f"eq.{VEHICLE_ID}",
+                "vehicle_id": f"eq.{vehicle_id}",
                 "event_type": "in.(moving,idle,parked,offline)",
                 "order": "created_at.desc",
                 "limit": "1",
@@ -228,7 +285,7 @@ def get_last_movement_event():
     return None, None
 
 
-def get_last_event_by_type(event_type):
+def get_last_event_by_type(event_type, vehicle_id):
     """Get the last event timestamp for a specific event type."""
     try:
         headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
@@ -237,7 +294,7 @@ def get_last_event_by_type(event_type):
             headers=headers,
             params={
                 "select": "created_at",
-                "vehicle_id": f"eq.{VEHICLE_ID}",
+                "vehicle_id": f"eq.{vehicle_id}",
                 "event_type": f"eq.{event_type}",
                 "order": "created_at.desc",
                 "limit": "1",
@@ -251,9 +308,9 @@ def get_last_event_by_type(event_type):
     return None
 
 
-def can_insert_event(event_type):
+def can_insert_event(event_type, vehicle_id):
     """Check if we should insert this event (5 min cooldown per type)."""
-    last_ts = get_last_event_by_type(event_type)
+    last_ts = get_last_event_by_type(event_type, vehicle_id)
     if last_ts is None:
         return True
     try:
@@ -265,7 +322,7 @@ def can_insert_event(event_type):
     return True
 
 
-def get_last_location_time():
+def get_last_location_time(vehicle_id):
     """Get the timestamp of the last successful location push."""
     try:
         headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
@@ -274,7 +331,7 @@ def get_last_location_time():
             headers=headers,
             params={
                 "select": "captured_at",
-                "vehicle_id": f"eq.{VEHICLE_ID}",
+                "vehicle_id": f"eq.{vehicle_id}",
                 "order": "captured_at.desc",
                 "limit": "1",
             },
@@ -287,7 +344,7 @@ def get_last_location_time():
     return None
 
 
-def get_last_geofence_state(geofence_id):
+def get_last_geofence_state(geofence_id, vehicle_id):
     """Get last geofence event type for a specific vehicle+geofence."""
     try:
         headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
@@ -296,7 +353,7 @@ def get_last_geofence_state(geofence_id):
             headers=headers,
             params={
                 "select": "event_type",
-                "vehicle_id": f"eq.{VEHICLE_ID}",
+                "vehicle_id": f"eq.{vehicle_id}",
                 "event_type": "in.(geofence_enter,geofence_exit)",
                 "order": "created_at.desc",
                 "limit": "1",
@@ -310,7 +367,7 @@ def get_last_geofence_state(geofence_id):
     return None
 
 
-def check_geofences(lat, lon):
+def check_geofences(lat, lon, vehicle_id):
     """Check geofence entry/exit and insert events only on state change."""
     try:
         headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
@@ -337,7 +394,7 @@ def check_geofences(lat, lon):
                 headers=headers,
                 params={
                     "select": "type",
-                    "vehicle_id": f"eq.{VEHICLE_ID}",
+                    "vehicle_id": f"eq.{vehicle_id}",
                     "geofence_id": f"eq.{gf['id']}",
                     "order": "occurred_at.desc",
                     "limit": "1",
@@ -372,7 +429,7 @@ def check_geofences(lat, lon):
                 headers={**headers, "Content-Type": "application/json"},
                 json={
                     "org_id": ORG_ID,
-                    "vehicle_id": VEHICLE_ID,
+                    "vehicle_id": vehicle_id,
                     "geofence_id": gf["id"],
                     "type": event_type,
                     "occurred_at": datetime.now(timezone.utc).isoformat(),
@@ -380,10 +437,10 @@ def check_geofences(lat, lon):
                 timeout=5,
             )
 
-            last_gf_event = get_last_geofence_state(gf["id"])
+            last_gf_event = get_last_geofence_state(gf["id"], vehicle_id)
             new_gf_event = f"geofence_{event_type}"
             if last_gf_event != new_gf_event:
-                insert_vehicle_event(new_gf_event, lat, lon, {"zone": gf["name"], "distance_m": round(dist)})
+                insert_vehicle_event(new_gf_event, vehicle_id, lat, lon, {"zone": gf["name"], "distance_m": round(dist)})
                 print(f"  [!] Geofence '{gf['name']}': {event_type.upper()} (distance: {dist:.0f}m)")
 
         return inside_any
@@ -393,11 +450,11 @@ def check_geofences(lat, lon):
         return False
 
 
-def check_movement_status(lat, lon, inside_any):
+def check_movement_status(lat, lon, vehicle_id, inside_any):
     """Determine navigating/idle/parked/offline based on time since last position."""
     try:
-        last_event, _ = get_last_movement_event()
-        last_loc = get_last_location_time()
+        last_event, _ = get_last_movement_event(vehicle_id)
+        last_loc = get_last_location_time(vehicle_id)
         if not last_loc:
             return
 
@@ -419,7 +476,7 @@ def check_movement_status(lat, lon, inside_any):
                 headers=headers,
                 params={
                     "select": "lat,lon,captured_at",
-                    "vehicle_id": f"eq.{VEHICLE_ID}",
+                    "vehicle_id": f"eq.{vehicle_id}",
                     "order": "captured_at.desc",
                     "limit": "5",
                 },
@@ -435,7 +492,7 @@ def check_movement_status(lat, lon, inside_any):
                     new_status = "moving"
 
         if new_status and new_status != last_event:
-            insert_vehicle_event(new_status, lat, lon, {} if new_status == "moving" else {"last_seen_min": round(minutes_since)})
+            insert_vehicle_event(new_status, vehicle_id, lat, lon, {} if new_status == "moving" else {"last_seen_min": round(minutes_since)})
             print(f"  [!] {new_status.title()}: last seen {minutes_since:.0f}min ago")
 
     except Exception as e:
@@ -443,39 +500,53 @@ def check_movement_status(lat, lon, inside_any):
 
 
 def poll_once():
-    """Poll location once and push to Supabase. Returns True if successful."""
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Locating...")
-    loc = locate_tracker()
-    if loc:
-        print(f"  [+] {loc['latitude']:.6f}, {loc['longitude']:.6f}")
-        ok = push_to_supabase(loc)
-        if ok:
-            inside_any = check_geofences(loc["latitude"], loc["longitude"])
-            check_movement_status(loc["latitude"], loc["longitude"], inside_any)
-        return ok
-    else:
-        print("  [-] Tracker not found")
-        last_loc = get_last_location_time()
-        if last_loc:
-            minutes_since = (datetime.now(timezone.utc) - last_loc).total_seconds() / 60
-            hours_since = minutes_since / 60
-            last_event, _ = get_last_movement_event()
-            new_status = None
-            if hours_since >= 2:
-                new_status = "offline"
-            elif minutes_since >= 20:
-                new_status = "parked"
-            elif minutes_since >= 5:
-                new_status = "idle"
-            if new_status and new_status != last_event:
-                insert_vehicle_event(new_status, None, None, {"last_seen_min": round(minutes_since)})
-                print(f"  [!] {new_status.title()}: last seen {minutes_since:.0f}min ago")
-            elif new_status is None:
-                print(f"  [-] Skip: last seen {minutes_since:.0f}min ago (< 5min)")
+    """Poll every discovered tracker once and push to Supabase.
+
+    Returns True if at least one tracker was located and pushed successfully.
+    Tracker 1 uses its existing vehicle row (resolved by the edge function), so
+    its behaviour is unchanged. Additional trackers get their own rows.
+    """
+    trackers = get_trackers()
+    any_ok = False
+
+    for (name, canonic_id) in trackers:
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Locating {name} ({canonic_id})...")
+        loc = locate_tracker(canonic_id)
+        if loc:
+            print(f"  [+] {loc['latitude']:.6f}, {loc['longitude']:.6f}")
+            vehicle_id = push_to_supabase(loc, canonic_id)
+            if vehicle_id:
+                any_ok = True
+                inside_any = check_geofences(loc["latitude"], loc["longitude"], vehicle_id)
+                check_movement_status(loc["latitude"], loc["longitude"], vehicle_id, inside_any)
         else:
-            if can_insert_event("offline"):
-                insert_vehicle_event("offline", None, None, {"reason": "tracker_not_found"})
-        return False
+            print("  [-] Tracker not found")
+            vehicle_id = resolve_vehicle_id(canonic_id)
+            if vehicle_id:
+                last_loc = get_last_location_time(vehicle_id)
+                if last_loc:
+                    minutes_since = (datetime.now(timezone.utc) - last_loc).total_seconds() / 60
+                    hours_since = minutes_since / 60
+                    last_event, _ = get_last_movement_event(vehicle_id)
+                    new_status = None
+                    if hours_since >= 2:
+                        new_status = "offline"
+                    elif minutes_since >= 20:
+                        new_status = "parked"
+                    elif minutes_since >= 5:
+                        new_status = "idle"
+                    if new_status and new_status != last_event:
+                        insert_vehicle_event(new_status, vehicle_id, None, None, {"last_seen_min": round(minutes_since)})
+                        print(f"  [!] {new_status.title()}: last seen {minutes_since:.0f}min ago")
+                    elif new_status is None:
+                        print(f"  [-] Skip: last seen {minutes_since:.0f}min ago (< 5min)")
+                else:
+                    if can_insert_event("offline", vehicle_id):
+                        insert_vehicle_event("offline", vehicle_id, None, None, {"reason": "tracker_not_found"})
+            else:
+                print("  [-] No vehicle row yet for this tracker; will create on next successful locate")
+
+    return any_ok
 
 
 if __name__ == "__main__":
