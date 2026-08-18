@@ -302,8 +302,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fleet Tracker - LocaTag Poller")
     parser.add_argument("--interval", type=int, default=120, help="Poll interval in seconds (default: 120)")
     parser.add_argument("--once", action="store_true", help="Run once and exit")
-    parser.add_argument("--email", default="REDACTED", help="Supabase email")
-    parser.add_argument("--password", default="REDACTED", help="Supabase password")
+    parser.add_argument("--email", default=os.environ.get("SUPABASE_EMAIL", ""), help="Supabase email")
+    parser.add_argument("--password", default=os.environ.get("SUPABASE_PASSWORD", ""), help="Supabase password")
     args = parser.parse_args()
 
     print("=" * 50)

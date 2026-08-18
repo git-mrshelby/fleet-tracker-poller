@@ -33,16 +33,15 @@ from KeyBackup.cloud_key_decryptor import decrypt_aes_gcm
 import traceback
 import requests
 
-LOCATAG_CANONIC_ID = "REDACTED"
+LOCATAG_CANONIC_ID = os.environ.get("LOCATAG_CANONIC_ID", "")
 LOCATAG_NAME = "LocaTag"
 
-SUPABASE_URL = "https://sctpsakdkwyojcqxwvsj.supabase.co"
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://sctpsakdkwyojcqxwvsj.supabase.co")
 EDGE_FUNCTION_URL = f"{SUPABASE_URL}/functions/v1/push-location"
-SUPABASE_ANON_KEY = "sb_publishable_26NwdXByyYdQ0JNh6sFiDQ_CZfnV1jS"
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "sb_publishable_26NwdXByyYdQ0JNh6sFiDQ_CZfnV1jS")
 SUPABASE_REST = f"{SUPABASE_URL}/rest/v1"
 
-VEHICLE_ID = "REDACTED"
-ORG_ID = "00000000-0000-0000-0000-000000000001"
+ORG_ID = os.environ.get("ORG_ID", "00000000-0000-0000-0000-000000000001")
 
 # Discovered trackers: list of (device_name, canonic_id).
 # Populated once per process run via the FMD device-list API (same technique
@@ -70,8 +69,11 @@ def discover_trackers():
             return canonic_ids
     except Exception as e:
         print(f"  [-] Device discovery failed: {e}")
-    # Fallback: at minimum keep tracker 1 working exactly as before.
-    return [(LOCATAG_NAME, LOCATAG_CANONIC_ID)]
+    # Fallback: if discovery fails and a canonic ID was supplied via env, keep
+    # that single tracker working. Otherwise return no trackers.
+    if LOCATAG_CANONIC_ID:
+        return [(LOCATAG_NAME, LOCATAG_CANONIC_ID)]
+    return []
 
 
 def get_trackers():
