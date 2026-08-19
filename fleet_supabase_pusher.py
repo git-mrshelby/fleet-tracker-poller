@@ -23,7 +23,6 @@ from NovaApi.ExecuteAction.LocateTracker.location_request import (
     create_action_request, generate_random_uuid, NOVA_ACTION_API_SCOPE,
 )
 from NovaApi.ExecuteAction.LocateTracker.decrypt_locations import retrieve_identity_key
-from NovaApi.ExecuteAction.PlaySound.sound_request import create_sound_request
 from NovaApi.nova_request import nova_request
 from Auth.fcm_receiver import FcmReceiver
 from ProtoDecoders import DeviceUpdate_pb2, Common_pb2
