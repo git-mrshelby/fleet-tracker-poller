@@ -9,7 +9,7 @@ COPY . .
 
 RUN echo '#!/bin/sh' > /app/start.sh && \
     echo 'if [ -n "$AUTH_SECRETS" ]; then echo "$AUTH_SECRETS" | base64 -d > Auth/secrets.json; fi' >> /app/start.sh && \
-    echo 'exec python fleet_supabase_pusher.py --interval 1' >> /app/start.sh && \
+    echo 'exec python fleet_supabase_pusher.py --interval 45' >> /app/start.sh && \
     chmod +x /app/start.sh
 
 CMD ["/app/start.sh"]
