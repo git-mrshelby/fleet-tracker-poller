@@ -37,7 +37,9 @@ import turso_client as db
 LOCATAG_CANONIC_ID = os.environ.get("LOCATAG_CANONIC_ID", "")
 LOCATAG_NAME = "LocaTag"
 
-ORG_ID = os.environ.get("ORG_ID", "00000000-0000-0000-0000-000000000001")
+# Empty-string env vars must fall back to the default (GitHub injects "" for
+# secrets that don't exist, and "" is falsy — os.environ.get alone would keep it).
+ORG_ID = os.environ.get("ORG_ID") or "00000000-0000-0000-0000-000000000001"
 
 # Discovered trackers: list of (device_name, canonic_id).
 # Populated once per process run via the FMD device-list API (same technique
@@ -143,17 +145,23 @@ def locate_tracker(canonic_id):
             loc = locations_proto.recentLocation
             time_val = locations_proto.recentLocationTimestamp
             if loc.status != Common_pb2.Status.SEMANTIC:
-                encrypted_location = loc.geoLocation.encryptedReport.encryptedLocation
-                identity_key_hash = hashlib.sha256(identity_key).digest()
-                decrypted = decrypt_aes_gcm(identity_key_hash, encrypted_location)
-                proto_loc = DeviceUpdate_pb2.Location()
-                proto_loc.ParseFromString(decrypted)
-                locations.append({
-                    "latitude": proto_loc.latitude / 1e7,
-                    "longitude": proto_loc.longitude / 1e7,
-                    "accuracy_m": loc.geoLocation.accuracy,
-                    "captured_at": datetime.fromtimestamp(int(time_val.seconds), tz=timezone.utc).isoformat(),
-                })
+                try:
+                    encrypted_location = loc.geoLocation.encryptedReport.encryptedLocation
+                    identity_key_hash = hashlib.sha256(identity_key).digest()
+                    decrypted = decrypt_aes_gcm(identity_key_hash, encrypted_location)
+                    proto_loc = DeviceUpdate_pb2.Location()
+                    proto_loc.ParseFromString(decrypted)
+                    locations.append({
+                        "latitude": proto_loc.latitude / 1e7,
+                        "longitude": proto_loc.longitude / 1e7,
+                        "accuracy_m": loc.geoLocation.accuracy,
+                        "captured_at": datetime.fromtimestamp(int(time_val.seconds), tz=timezone.utc).isoformat(),
+                    })
+                except Exception as e:
+                    # Some trackers' own reports won't decrypt (e.g. firmware that
+                    # re-keys after the shared/owner key rotation). Don't abort —
+                    # network locations below may still decode fine.
+                    print(f"  [~] Own report decrypt skipped: {e}")
 
         for loc, time_val in zip(locations_proto.networkLocations, locations_proto.networkLocationTimestamps):
             if loc.status == Common_pb2.Status.SEMANTIC:
