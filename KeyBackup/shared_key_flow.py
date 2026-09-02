@@ -13,13 +13,25 @@ from chrome_driver import create_driver
 def request_shared_key_flow():
     driver = create_driver()
     try:
-        # Open Google accounts sign-in page
-        driver.get("https://accounts.google.com/")
+        # Open Google accounts sign-in page. Starting at myaccount.google.com
+        # ensures the post-signin redirect lands back on myaccount.google.com,
+        # which is what the WebDriverWait below matches on.
+        driver.get("https://myaccount.google.com/")
 
-        # Wait for user to sign in and redirect to https://myaccount.google.com
-        WebDriverWait(driver, 300).until(
-            ec.url_contains("https://myaccount.google.com")
-        )
+        # Wait for the user to complete sign-in. Google may redirect to
+        # various pages afterwards (myaccount, the account "about" page, etc.),
+        # so simply wait until we leave the accounts.google.com sign-in flow.
+        import time
+        deadline = time.time() + 300
+        signed_in = False
+        while time.time() < deadline:
+            url = driver.current_url
+            if "accounts.google.com" not in url:
+                signed_in = True
+                break
+            time.sleep(2)
+        if not signed_in:
+            raise Exception("user did not complete sign-in within 300s")
         print("[SharedKeyFlow] Signed in successfully.")
 
         # Open the security domain request URL
@@ -67,7 +79,13 @@ def request_shared_key_flow():
                 pass
 
     except Exception as e:
-        print(f"An error occurred: {e}")
+        import traceback
+        print(f"An error occurred: {type(e).__name__}: {e}")
+        try:
+            print(f"URL at failure: {driver.current_url}")
+        except Exception:
+            pass
+        traceback.print_exc()
     finally:
         driver.quit()
 
