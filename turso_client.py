@@ -7,8 +7,8 @@ import os
 import uuid
 import requests
 
-TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "").rstrip("/")
-TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
+TURSO_DATABASE_URL = (os.environ.get("TURSO_DATABASE_URL") or "").rstrip("/")
+TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN") or ""
 
 _last_replication_index = None
 
