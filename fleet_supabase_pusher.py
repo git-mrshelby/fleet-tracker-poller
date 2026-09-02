@@ -15,7 +15,7 @@ import time
 import json
 import argparse
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -338,6 +338,33 @@ def get_recent_locations(vehicle_id, limit=5):
         return []
 
 
+RETENTION_MONTHS = int(os.environ.get("RETENTION_MONTHS", "6"))
+_retention_last_run = 0.0
+
+
+def enforce_retention():
+    """Delete location_logs and vehicle_events older than RETENTION_MONTHS.
+
+    Runs at most once per hour per process; best-effort (failures are logged
+    and skipped — data is deleted on the next successful sweep).
+    """
+    global _retention_last_run
+    now = time.time()
+    if now - _retention_last_run < 3600:
+        return
+    _retention_last_run = now
+    try:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=30 * RETENTION_MONTHS)
+        ).isoformat()
+        r1 = db.run("DELETE FROM location_logs WHERE captured_at < ?", [cutoff])
+        r2 = db.run("DELETE FROM vehicle_events WHERE created_at < ?", [cutoff])
+        if r1 or r2:
+            print(f"  [~] Retention: deleted {r1} location logs, {r2} events older than {RETENTION_MONTHS} months")
+    except Exception as e:
+        print(f"  [-] Retention error: {e}")
+
+
 def get_last_geofence_state(geofence_id, vehicle_id):
     """Get last geofence event type for a specific vehicle+geofence."""
     try:
@@ -449,9 +476,8 @@ def poll_once():
     """Poll every discovered tracker once and push to Turso.
 
     Returns True if at least one tracker was located and pushed successfully.
-    Tracker 1 uses its existing vehicle row (resolved by the edge function), so
-    its behaviour is unchanged. Additional trackers get their own rows.
     """
+    enforce_retention()
     trackers = get_trackers()
     any_ok = False
 
