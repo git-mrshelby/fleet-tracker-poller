@@ -37,6 +37,7 @@ jobs:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           ORG_ID: ${{ secrets.ORG_ID }}
+          PYTHONIOENCODING: utf-8
         run: python fleet_supabase_pusher.py --loop 300 --interval 45
 
       - name: Self-trigger next run immediately
