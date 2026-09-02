@@ -145,23 +145,27 @@ def locate_tracker(canonic_id):
             loc = locations_proto.recentLocation
             time_val = locations_proto.recentLocationTimestamp
             if loc.status != Common_pb2.Status.SEMANTIC:
-                try:
-                    encrypted_location = loc.geoLocation.encryptedReport.encryptedLocation
+                encrypted_location = loc.geoLocation.encryptedReport.encryptedLocation
+                public_key_random = loc.geoLocation.encryptedReport.publicKeyRandom
+                # Official GoogleFindMyTools logic: empty publicKeyRandom means
+                # this is the device's own GPS report (AES-GCM w/ identity key
+                # hash); a non-empty value means it was relayed by the FMDN
+                # network and must be decrypted with the FMDN foreign-tracker
+                # cryptor instead.
+                if public_key_random == b"":
                     identity_key_hash = hashlib.sha256(identity_key).digest()
                     decrypted = decrypt_aes_gcm(identity_key_hash, encrypted_location)
-                    proto_loc = DeviceUpdate_pb2.Location()
-                    proto_loc.ParseFromString(decrypted)
-                    locations.append({
-                        "latitude": proto_loc.latitude / 1e7,
-                        "longitude": proto_loc.longitude / 1e7,
-                        "accuracy_m": loc.geoLocation.accuracy,
-                        "captured_at": datetime.fromtimestamp(int(time_val.seconds), tz=timezone.utc).isoformat(),
-                    })
-                except Exception as e:
-                    # Some trackers' own reports won't decrypt (e.g. firmware that
-                    # re-keys after the shared/owner key rotation). Don't abort —
-                    # network locations below may still decode fine.
-                    print(f"  [~] Own report decrypt skipped: {e}")
+                else:
+                    time_offset = loc.geoLocation.deviceTimeOffset
+                    decrypted = fmdn_decrypt(identity_key, encrypted_location, public_key_random, time_offset)
+                proto_loc = DeviceUpdate_pb2.Location()
+                proto_loc.ParseFromString(decrypted)
+                locations.append({
+                    "latitude": proto_loc.latitude / 1e7,
+                    "longitude": proto_loc.longitude / 1e7,
+                    "accuracy_m": loc.geoLocation.accuracy,
+                    "captured_at": datetime.fromtimestamp(int(time_val.seconds), tz=timezone.utc).isoformat(),
+                })
 
         for loc, time_val in zip(locations_proto.networkLocations, locations_proto.networkLocationTimestamps):
             if loc.status == Common_pb2.Status.SEMANTIC:
