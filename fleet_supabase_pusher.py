@@ -1,7 +1,7 @@
 """
-Fleet Tracker - LocaTag → Supabase Pusher
-Polls Google's FMD network, pushes location to Supabase via Edge Function.
-The app then reads from Supabase Realtime — no laptop dependency at runtime.
+Fleet Tracker - LocaTag → Turso (libSQL) Pusher
+Polls Google's FMD network, writes location straight to Turso over HTTP.
+The app then reads from Turso — no laptop dependency at runtime.
 
 Usage:
   python fleet_supabase_pusher.py --once          # Single poll
@@ -32,13 +32,10 @@ from KeyBackup.cloud_key_decryptor import decrypt_aes_gcm
 import traceback
 import requests
 
+import turso_client as db
+
 LOCATAG_CANONIC_ID = os.environ.get("LOCATAG_CANONIC_ID", "")
 LOCATAG_NAME = "LocaTag"
-
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://sctpsakdkwyojcqxwvsj.supabase.co")
-EDGE_FUNCTION_URL = f"{SUPABASE_URL}/functions/v1/push-location"
-SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "sb_publishable_26NwdXByyYdQ0JNh6sFiDQ_CZfnV1jS")
-SUPABASE_REST = f"{SUPABASE_URL}/rest/v1"
 
 ORG_ID = os.environ.get("ORG_ID", "00000000-0000-0000-0000-000000000001")
 
@@ -84,17 +81,14 @@ def get_trackers():
 
 
 def resolve_vehicle_id(canonic_id):
-    """Look up the Supabase vehicle id for a tracker (by tracker_id)."""
+    """Look up the Turso vehicle id for a tracker (by tracker_id)."""
     try:
-        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
-        r = requests.get(
-            f"{SUPABASE_REST}/vehicles",
-            headers=headers,
-            params={"select": "id", "tracker_id": f"eq.{canonic_id}", "org_id": f"eq.{ORG_ID}"},
-            timeout=5,
+        row = db.query_one(
+            "SELECT id FROM vehicles WHERE tracker_id = ? AND org_id = ?",
+            [canonic_id, ORG_ID],
         )
-        if r.status_code == 200 and r.json():
-            return r.json()[0]["id"]
+        if row:
+            return row[0]
     except Exception:
         pass
     return None
@@ -194,34 +188,51 @@ def locate_tracker(canonic_id):
         return None
 
 
-def push_to_supabase(location, canonic_id):
-    """Push location to Supabase via Edge Function. Returns the vehicle_id."""
+def push_to_turso(location, canonic_id, tracker_name=None):
+    """Upsert vehicle + insert location log straight into Turso.
+
+    Returns the vehicle_id.
+    """
     try:
-        resp = requests.post(
-            EDGE_FUNCTION_URL,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
-            },
-            json={
-                "tracker_id": canonic_id,
-                "name": None,
-                "latitude": location["latitude"],
-                "longitude": location["longitude"],
-                "captured_at": location["captured_at"],
-                "accuracy_m": location.get("accuracy_m"),
-            },
-            timeout=10,
+        now = datetime.now(timezone.utc).isoformat()
+        captured_at = location.get("captured_at") or now
+        lat = location["latitude"]
+        lon = location["longitude"]
+        accuracy = location.get("accuracy_m")
+
+        rows = db.query(
+            "SELECT id FROM vehicles WHERE tracker_id = ? AND org_id = ?",
+            [canonic_id, ORG_ID],
         )
-        if resp.status_code == 200:
-            print(f"  [+] Pushed to Supabase")
-            try:
-                return resp.json().get("vehicle_id")
-            except Exception:
-                return None
+        if rows:
+            vehicle_id = rows[0][0]
+            if tracker_name:
+                db.run(
+                    "UPDATE vehicles SET name = COALESCE(?, name) WHERE id = ?",
+                    [tracker_name, vehicle_id],
+                )
         else:
-            print(f"  [-] Edge Function error: {resp.status_code} {resp.text[:200]}")
-            return None
+            vehicle_id = db.new_id()
+            db.run(
+                "INSERT INTO vehicles (id, org_id, name, tracker_type, tracker_id, status,"
+                " last_lat, last_lon, last_fix_at) VALUES (?, ?, ?, 'findmy', ?, 'parked', ?, ?, ?)",
+                [vehicle_id, ORG_ID, tracker_name or "LocaTag", canonic_id, lat, lon, captured_at],
+            )
+
+        db.execute([
+            (
+                "UPDATE vehicles SET last_lat = ?, last_lon = ?, last_fix_at = ?,"
+                " status = 'parked', updated_at = ? WHERE id = ?",
+                [lat, lon, captured_at, now, vehicle_id],
+            ),
+            (
+                "INSERT INTO location_logs (id, vehicle_id, org_id, lat, lon, accuracy_m,"
+                " captured_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, 'fmd-poller')",
+                [db.new_id(), vehicle_id, ORG_ID, lat, lon, accuracy, captured_at],
+            ),
+        ])
+        print(f"  [+] Pushed to Turso")
+        return vehicle_id
     except Exception as e:
         print(f"  [-] Push error: {e}")
         return None
@@ -241,21 +252,13 @@ def haversine_m(lat1, lon1, lat2, lon2):
 def insert_vehicle_event(event_type, vehicle_id, lat=None, lon=None, event_data=None):
     """Insert an event into vehicle_events table."""
     try:
-        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
-        payload = {
-            "org_id": ORG_ID,
-            "vehicle_id": vehicle_id,
-            "event_type": event_type,
-            "lat": lat,
-            "lon": lon,
-            "event_data": event_data or {},
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        requests.post(
-            f"{SUPABASE_REST}/vehicle_events",
-            headers={**headers, "Content-Type": "application/json"},
-            json=payload,
-            timeout=5,
+        db.run(
+            "INSERT INTO vehicle_events (id, vehicle_id, org_id, event_type, lat, lon, event_data)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                db.new_id(), vehicle_id, ORG_ID, event_type, lat, lon,
+                json.dumps(event_data or {}),
+            ],
         )
         print(f"  [!] Event: {event_type}")
     except Exception as e:
@@ -265,23 +268,15 @@ def insert_vehicle_event(event_type, vehicle_id, lat=None, lon=None, event_data=
 def get_last_movement_event(vehicle_id):
     """Get the last movement event type and timestamp for this vehicle."""
     try:
-        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
-        r = requests.get(
-            f"{SUPABASE_REST}/vehicle_events",
-            headers=headers,
-            params={
-                "select": "event_type,created_at",
-                "vehicle_id": f"eq.{vehicle_id}",
-                "event_type": "in.(moving,idle,parked,offline)",
-                "order": "created_at.desc",
-                "limit": "1",
-            },
-            timeout=5,
+        row = db.query_one(
+            "SELECT event_type, created_at FROM vehicle_events"
+            " WHERE vehicle_id = ? AND event_type IN ('moving','idle','parked','offline')"
+            " ORDER BY created_at DESC LIMIT 1",
+            [vehicle_id],
         )
-        if r.status_code == 200 and r.json():
-            row = r.json()[0]
-            return row["event_type"], row["created_at"]
-    except:
+        if row:
+            return row[0], row[1]
+    except Exception:
         pass
     return None, None
 
@@ -289,22 +284,15 @@ def get_last_movement_event(vehicle_id):
 def get_last_event_by_type(event_type, vehicle_id):
     """Get the last event timestamp for a specific event type."""
     try:
-        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
-        r = requests.get(
-            f"{SUPABASE_REST}/vehicle_events",
-            headers=headers,
-            params={
-                "select": "created_at",
-                "vehicle_id": f"eq.{vehicle_id}",
-                "event_type": f"eq.{event_type}",
-                "order": "created_at.desc",
-                "limit": "1",
-            },
-            timeout=5,
+        row = db.query_one(
+            "SELECT created_at FROM vehicle_events"
+            " WHERE vehicle_id = ? AND event_type = ?"
+            " ORDER BY created_at DESC LIMIT 1",
+            [vehicle_id, event_type],
         )
-        if r.status_code == 200 and r.json():
-            return r.json()[0]["created_at"]
-    except:
+        if row:
+            return row[0]
+    except Exception:
         pass
     return None
 
@@ -326,44 +314,41 @@ def can_insert_event(event_type, vehicle_id):
 def get_last_location_time(vehicle_id):
     """Get the timestamp of the last successful location push."""
     try:
-        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
-        r = requests.get(
-            f"{SUPABASE_REST}/location_logs_view",
-            headers=headers,
-            params={
-                "select": "captured_at",
-                "vehicle_id": f"eq.{vehicle_id}",
-                "order": "captured_at.desc",
-                "limit": "1",
-            },
-            timeout=5,
+        row = db.query_one(
+            "SELECT captured_at FROM location_logs WHERE vehicle_id = ?"
+            " ORDER BY captured_at DESC LIMIT 1",
+            [vehicle_id],
         )
-        if r.status_code == 200 and r.json():
-            return datetime.fromisoformat(r.json()[0]["captured_at"].replace("Z", "+00:00"))
-    except:
+        if row:
+            return datetime.fromisoformat(row[0].replace("Z", "+00:00"))
+    except Exception:
         pass
     return None
+
+
+def get_recent_locations(vehicle_id, limit=5):
+    """Get the most recent location points for a vehicle."""
+    try:
+        return db.query(
+            "SELECT lat, lon, captured_at FROM location_logs WHERE vehicle_id = ?"
+            " ORDER BY captured_at DESC LIMIT ?",
+            [vehicle_id, limit],
+        )
+    except Exception:
+        return []
 
 
 def get_last_geofence_state(geofence_id, vehicle_id):
     """Get last geofence event type for a specific vehicle+geofence."""
     try:
-        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
-        r = requests.get(
-            f"{SUPABASE_REST}/vehicle_events",
-            headers=headers,
-            params={
-                "select": "event_type",
-                "vehicle_id": f"eq.{vehicle_id}",
-                "event_type": "in.(geofence_enter,geofence_exit)",
-                "order": "created_at.desc",
-                "limit": "1",
-            },
-            timeout=5,
+        row = db.query_one(
+            "SELECT type FROM geofence_events WHERE vehicle_id = ? AND geofence_id = ?"
+            " ORDER BY occurred_at DESC LIMIT 1",
+            [vehicle_id, geofence_id],
         )
-        if r.status_code == 200 and r.json():
-            return r.json()[0]["event_type"]
-    except:
+        if row:
+            return row[0]
+    except Exception:
         pass
     return None
 
@@ -371,40 +356,22 @@ def get_last_geofence_state(geofence_id, vehicle_id):
 def check_geofences(lat, lon, vehicle_id):
     """Check geofence entry/exit and insert events only on state change."""
     try:
-        headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
-
-        r = requests.get(
-            f"{SUPABASE_REST}/geofences",
-            headers=headers,
-            params={"select": "id,name,center_lat,center_lon,radius_meters,notify_on_enter,notify_on_exit", "deleted_at": "is.null"},
-            timeout=5,
+        geofences = db.query(
+            "SELECT id, name, center_lat, center_lon, radius_meters, notify_on_enter, notify_on_exit"
+            " FROM geofences WHERE deleted_at IS NULL"
         )
-        if r.status_code != 200:
-            return False
-        geofences = r.json()
         if not geofences:
             return False
 
         inside_any = False
         for gf in geofences:
-            dist = haversine_m(lat, lon, gf["center_lat"], gf["center_lon"])
-            is_inside = dist <= gf["radius_meters"]
+            gf_id, gf_name, c_lat, c_lon, radius = gf[0], gf[1], gf[2], gf[3], gf[4]
+            notify_enter = gf[5] if gf[5] is not None else 1
+            notify_exit = gf[6] if gf[6] is not None else 1
+            dist = haversine_m(lat, lon, c_lat, c_lon)
+            is_inside = dist <= radius
 
-            r2 = requests.get(
-                f"{SUPABASE_REST}/geofence_events",
-                headers=headers,
-                params={
-                    "select": "type",
-                    "vehicle_id": f"eq.{vehicle_id}",
-                    "geofence_id": f"eq.{gf['id']}",
-                    "order": "occurred_at.desc",
-                    "limit": "1",
-                },
-                timeout=5,
-            )
-            last_type = None
-            if r2.status_code == 200 and r2.json():
-                last_type = r2.json()[0]["type"]
+            last_type = get_last_geofence_state(gf_id, vehicle_id)
 
             event_type = None
             if last_type is None and is_inside:
@@ -420,29 +387,22 @@ def check_geofences(lat, lon, vehicle_id):
             if event_type is None:
                 continue
 
-            if event_type == "enter" and not gf.get("notify_on_enter", True):
+            if event_type == "enter" and not notify_enter:
                 continue
-            if event_type == "exit" and not gf.get("notify_on_exit", True):
+            if event_type == "exit" and not notify_exit:
                 continue
 
-            requests.post(
-                f"{SUPABASE_REST}/geofence_events",
-                headers={**headers, "Content-Type": "application/json"},
-                json={
-                    "org_id": ORG_ID,
-                    "vehicle_id": vehicle_id,
-                    "geofence_id": gf["id"],
-                    "type": event_type,
-                    "occurred_at": datetime.now(timezone.utc).isoformat(),
-                },
-                timeout=5,
+            db.run(
+                "INSERT INTO geofence_events (id, org_id, vehicle_id, geofence_id, type, occurred_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                [db.new_id(), ORG_ID, vehicle_id, gf_id, event_type, datetime.now(timezone.utc).isoformat()],
             )
 
-            last_gf_event = get_last_geofence_state(gf["id"], vehicle_id)
+            last_gf_event = get_last_geofence_state(gf_id, vehicle_id)
             new_gf_event = f"geofence_{event_type}"
             if last_gf_event != new_gf_event:
-                insert_vehicle_event(new_gf_event, vehicle_id, lat, lon, {"zone": gf["name"], "distance_m": round(dist)})
-                print(f"  [!] Geofence '{gf['name']}': {event_type.upper()} (distance: {dist:.0f}m)")
+                insert_vehicle_event(new_gf_event, vehicle_id, lat, lon, {"zone": gf_name, "distance_m": round(dist)})
+                print(f"  [!] Geofence '{gf_name}': {event_type.upper()} (distance: {dist:.0f}m)")
 
         return inside_any
 
@@ -471,24 +431,9 @@ def check_movement_status(lat, lon, vehicle_id, inside_any):
             new_status = "idle"
         else:
             # Last seen <5 min ago — check if actually moved (≥100m = genuine movement, not GPS drift)
-            headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
-            r = requests.get(
-                f"{SUPABASE_REST}/location_logs_view",
-                headers=headers,
-                params={
-                    "select": "lat,lon,captured_at",
-                    "vehicle_id": f"eq.{vehicle_id}",
-                    "order": "captured_at.desc",
-                    "limit": "5",
-                },
-                timeout=5,
-            )
-            if r.status_code == 200 and len(r.json()) >= 2:
-                points = r.json()
-                dist_old = haversine_m(
-                    points[0]["lat"], points[0]["lon"],
-                    points[-1]["lat"], points[-1]["lon"],
-                )
+            points = get_recent_locations(vehicle_id, 5)
+            if len(points) >= 2:
+                dist_old = haversine_m(points[0][0], points[0][1], points[-1][0], points[-1][1])
                 if dist_old >= 100:
                     new_status = "moving"
 
@@ -501,7 +446,7 @@ def check_movement_status(lat, lon, vehicle_id, inside_any):
 
 
 def poll_once():
-    """Poll every discovered tracker once and push to Supabase.
+    """Poll every discovered tracker once and push to Turso.
 
     Returns True if at least one tracker was located and pushed successfully.
     Tracker 1 uses its existing vehicle row (resolved by the edge function), so
@@ -515,7 +460,7 @@ def poll_once():
         loc = locate_tracker(canonic_id)
         if loc:
             print(f"  [+] {loc['latitude']:.6f}, {loc['longitude']:.6f}")
-            vehicle_id = push_to_supabase(loc, canonic_id)
+            vehicle_id = push_to_turso(loc, canonic_id, tracker_name=name)
             if vehicle_id:
                 any_ok = True
                 inside_any = check_geofences(loc["latitude"], loc["longitude"], vehicle_id)
@@ -551,16 +496,16 @@ def poll_once():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fleet Tracker - Supabase Pusher")
-    parser.add_argument("--interval", type=int, default=1, help="Poll interval (default: 1s)")
+    parser = argparse.ArgumentParser(description="Fleet Tracker - Turso Pusher")
+    parser.add_argument("--interval", type=int, default=45, help="Poll interval in seconds (default: 45)")
     parser.add_argument("--once", action="store_true", help="Run once and exit")
     parser.add_argument("--loop", type=int, default=0, help="Run in loop mode for N seconds (e.g. 280 for GitHub Actions)")
     args = parser.parse_args()
 
     print("=" * 50)
-    print("Fleet Tracker to Supabase")
+    print("Fleet Tracker to Turso")
     print("=" * 50)
-    print(f"Edge Function: {EDGE_FUNCTION_URL}")
+    print(f"Turso URL: {os.environ.get('TURSO_DATABASE_URL', '(not set)')}")
     print()
 
     if args.once:
