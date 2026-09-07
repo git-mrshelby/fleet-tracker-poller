@@ -14,6 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 6
 
+    concurrency:
+      group: poll
+      cancel-in-progress: true
+
     steps:
       - uses: actions/checkout@v4
 

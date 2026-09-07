@@ -34,6 +34,25 @@ import requests
 
 import turso_client as db
 
+# One-time migration: add a uniqueness constraint so the same tracker fix
+# (vehicle_id + captured_at) is stored at most once.
+# The duplicate rows from the previous CI flood were already collapsed
+# by a manual dedupe run before this was pushed.  Skipping the heavy
+# DELETE here keeps the workflow under its timeout on the first run.
+def _ensure_location_logs_index():
+    try:
+        db.run(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "uniq_location_logs_vehicle_fix "
+            "ON location_logs (vehicle_id, captured_at)"
+        )
+        n = db.query("SELECT COUNT(*) FROM location_logs")[0][0]
+        print(f"[*] location_logs index ready — {n:,} rows")
+    except Exception as e:
+        print(f"[*] index setup skipped: {e}")
+
+_ensure_location_logs_index()
+
 LOCATAG_CANONIC_ID = os.environ.get("LOCATAG_CANONIC_ID", "")
 LOCATAG_NAME = "LocaTag"
 
@@ -231,6 +250,22 @@ def push_to_turso(location, canonic_id, tracker_name=None):
                 [vehicle_id, ORG_ID, tracker_name or "LocaTag", canonic_id, lat, lon, captured_at],
             )
 
+        # Belt-and-suspenders: skip a duplicate insert if the same
+        # tracker fix (vehicle_id + captured_at) was already logged
+        # (protects against residual concurrency even with cancel-in-progress).
+        dup = db.query(
+            "SELECT 1 FROM location_logs WHERE vehicle_id = ? AND captured_at = ? LIMIT 1",
+            [vehicle_id, captured_at],
+        )
+        if dup:
+            db.run(
+                "UPDATE vehicles SET last_lat = ?, last_lon = ?, last_fix_at = ?,"
+                " status = 'parked', updated_at = ? WHERE id = ?",
+                [lat, lon, captured_at, now, vehicle_id],
+            )
+            print("  [+] Pushed to Turso (duplicate fix skipped)")
+            return vehicle_id
+
         db.execute([
             (
                 "UPDATE vehicles SET last_lat = ?, last_lon = ?, last_fix_at = ?,"
@@ -238,7 +273,7 @@ def push_to_turso(location, canonic_id, tracker_name=None):
                 [lat, lon, captured_at, now, vehicle_id],
             ),
             (
-                "INSERT INTO location_logs (id, vehicle_id, org_id, lat, lon, accuracy_m,"
+                "INSERT OR IGNORE INTO location_logs (id, vehicle_id, org_id, lat, lon, accuracy_m,"
                 " captured_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, 'fmd-poller')",
                 [db.new_id(), vehicle_id, ORG_ID, lat, lon, accuracy, captured_at],
             ),
