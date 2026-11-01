@@ -27,9 +27,10 @@ from ProtoDecoders import DeviceUpdate_pb2
 from ProtoDecoders.decoder import parse_device_update_protobuf, get_canonic_ids
 from SpotApi.CreateBleDevice.util import flip_bits
 
-# Supabase config
-SUPABASE_URL = "https://REDACTED_PROJECT_REF.supabase.co"
-SUPABASE_ANON_KEY = "REDACTED_SUPABASE_KEY"
+# Supabase config (kept out of the repo — supply via env if this legacy
+# script is ever used; the live poller writes to Turso instead).
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 
 # Track the LocaTag canonic ID
 LOCATAG_CANONIC_ID = "REDACTED"
