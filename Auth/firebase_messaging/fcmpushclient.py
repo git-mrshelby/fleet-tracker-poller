@@ -396,18 +396,28 @@ class FcmPushClient:  # pylint:disable=too-many-instance-attributes
                 await self._reset()
 
     @staticmethod
+    def _b64decode_padded(value: str) -> bytes:
+        """URL-safe base64 decode that tolerates missing padding.
+
+        FCM sends crypto-key/encryption values unpadded, which raises
+        binascii.Error('Incorrect padding') on strict base64 decoders.
+        """
+        raw = value.encode("ascii")
+        return urlsafe_b64decode(raw + b"=" * (-len(raw) % 4))
+
+    @staticmethod
     def _decrypt_raw_data(
         credentials: dict[str, dict[str, str]],
         crypto_key_str: str,
         salt_str: str,
         raw_data: bytes,
     ) -> bytes:
-        crypto_key = urlsafe_b64decode(crypto_key_str.encode("ascii"))
-        salt = urlsafe_b64decode(salt_str.encode("ascii"))
+        crypto_key = FcmPushClient._b64decode_padded(crypto_key_str)
+        salt = FcmPushClient._b64decode_padded(salt_str)
         der_data_str = credentials["keys"]["private"]
-        der_data = urlsafe_b64decode(der_data_str.encode("ascii") + b"========")
+        der_data = FcmPushClient._b64decode_padded(der_data_str)
         secret_str = credentials["keys"]["secret"]
-        secret = urlsafe_b64decode(secret_str.encode("ascii") + b"========")
+        secret = FcmPushClient._b64decode_padded(secret_str)
         privkey = load_der_private_key(
             der_data, password=None, backend=default_backend()
         )
