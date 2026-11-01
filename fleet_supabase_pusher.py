@@ -47,7 +47,7 @@ def _ensure_location_logs_index():
             "ON location_logs (vehicle_id, captured_at)"
         )
         n = db.query("SELECT COUNT(*) FROM location_logs")[0][0]
-        print(f"[*] location_logs index ready — {n:,} rows")
+        print(f"[*] location_logs index ready — {int(n):,} rows")
     except Exception as e:
         print(f"[*] index setup skipped: {e}")
 

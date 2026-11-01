@@ -460,8 +460,14 @@ class FcmPushClient:  # pylint:disable=too-many-instance-attributes
             # The deleted_messages message does not contain data.
             return
         try:
-            crypto_key = self._app_data_by_key(msg, "crypto-key")[3:]  # strip dh=
-            salt = self._app_data_by_key(msg, "encryption")[5:]  # strip salt=
+            # crypto-key format changed: previously "dh=<b64>", now
+            # "<dh_b64>; p256ecdsa=<b64>". Take the first segment.
+            crypto_key = self._app_data_by_key(msg, "crypto-key").split(";")[0].strip()
+            if crypto_key.startswith("dh="):
+                crypto_key = crypto_key[3:]
+            salt = self._app_data_by_key(msg, "encryption")
+            if salt.startswith("salt="):
+                salt = salt[5:]
             subtype = self._app_data_by_key(msg, "subtype")
             if TYPE_CHECKING:
                 assert self.credentials
